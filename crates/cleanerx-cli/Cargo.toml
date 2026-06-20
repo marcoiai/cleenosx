@@ -1,0 +1,13 @@
+[package]
+name = "cleanerx-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cleanerx-core = { path = "../cleanerx-core" }
+
+[[bin]]
+name = "cleanerx"
+path = "src/main.rs"
+
