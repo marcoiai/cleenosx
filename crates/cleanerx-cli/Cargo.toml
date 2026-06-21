@@ -8,6 +8,5 @@ license.workspace = true
 cleanerx-core = { path = "../cleanerx-core" }
 
 [[bin]]
-name = "cleanerx"
+name = "cx"
 path = "src/main.rs"
-

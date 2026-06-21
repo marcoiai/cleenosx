@@ -1,14 +1,16 @@
 use crate::classify::{classify_path, finding_for_path};
-use crate::command::{log_command_error, run};
+use crate::cleanup::{cleanup_candidate_id, register_usage_nodes};
+use crate::command::{log_command_error, run, run_partial_with_timeout_and_cancel};
 use crate::models::{
-    Finding, Overview, RiskLevel, ScanLog, ScanResult, StorageCategory, StorageSummary, UsageNode,
-    VolumeInfo,
+    DeepScanResult, DeepScanWarningsSummary, Finding, Overview, RiskLevel, ScanLog, ScanResult,
+    StorageCategory, StorageSummary, UsageKind, UsageNode, VolumeInfo,
 };
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 const DATA_VOLUME_PATH: &str = "/System/Volumes/Data";
 const ASSETS_V2_PATHS: &[&str] = &[
@@ -24,33 +26,24 @@ const ASSETS_V2_TARGETS: &[&str] = &[
     "com_apple_MobileAsset_LinguisticData",
     "com_apple_MobileAsset_UAF_Siri_Understanding",
 ];
+const DEEP_SCAN_TIMEOUT: Duration = Duration::from_secs(120);
+static DEEP_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+static DEEP_SCAN_CANCEL: AtomicBool = AtomicBool::new(false);
 
-pub fn scan_overview() -> ScanResult<Overview> {
-    let mut logs = vec![ScanLog::info("Starting read-only overview scan.")];
+pub fn scan_storage_overview() -> ScanResult<Overview> {
+    let mut logs = vec![ScanLog::info("Starting lightweight storage overview scan.")];
 
     let volume_scan = scan_volumes();
     logs.extend(volume_scan.logs);
 
-    let data_scan = scan_data_usage();
-    logs.extend(data_scan.logs);
-
-    let assets_scan = scan_assets_v2();
-    logs.extend(assets_scan.logs);
-
-    let snapshots_scan = list_snapshots();
-    logs.extend(snapshots_scan.logs);
-
-    let mut findings = assets_scan.data;
-    findings.extend(snapshots_scan.data);
-    findings.extend(summary_warnings(&volume_scan.data));
-
     let summary = summarize_volumes(&volume_scan.data);
+    let findings = summary_warnings(&volume_scan.data);
 
     ScanResult {
         data: Overview {
             summary,
             volumes: volume_scan.data,
-            usage_roots: data_scan.data,
+            usage_roots: Vec::new(),
             findings,
         },
         logs,
@@ -62,6 +55,7 @@ pub fn scan_volumes() -> ScanResult<Vec<VolumeInfo>> {
         "Scanning APFS volumes and mounted filesystems.",
     )];
     let mut volumes = parse_df_volumes(&mut logs);
+    merge_mount_metadata(&mut volumes, &mut logs);
 
     match run("diskutil", &["apfs", "list"]) {
         Ok(output) => merge_apfs_metadata(&mut volumes, &output.stdout),
@@ -85,28 +79,213 @@ pub fn scan_volumes() -> ScanResult<Vec<VolumeInfo>> {
     }
 }
 
+fn merge_mount_metadata(volumes: &mut Vec<VolumeInfo>, logs: &mut Vec<ScanLog>) {
+    let output = match run("mount", &[]) {
+        Ok(output) => output.stdout,
+        Err(error) => {
+            logs.push(log_command_error("mount failed", &error));
+            return;
+        }
+    };
+
+    for line in output.lines() {
+        let Some((identifier, rest)) = line.split_once(" on ") else {
+            continue;
+        };
+        let Some((mount_point, options)) = rest.rsplit_once(" (") else {
+            continue;
+        };
+        let flags = options
+            .trim_end_matches(')')
+            .split(',')
+            .map(str::trim)
+            .filter(|flag| !flag.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        if let Some(volume) = volumes.iter_mut().find(|volume| {
+            volume.identifier == identifier || volume.mount_point.as_deref() == Some(mount_point)
+        }) {
+            for flag in &flags {
+                if !volume.flags.contains(flag) {
+                    volume.flags.push(flag.clone());
+                }
+            }
+            if flags
+                .iter()
+                .any(|flag| flag == "read-only" || flag == "sealed")
+            {
+                volume.risk = RiskLevel::ReadOnlySystem;
+                let note =
+                    "Mounted read-only; deleting the mountpoint will not free its backing storage.";
+                if !volume.notes.iter().any(|existing| existing == note) {
+                    volume.notes.push(note.to_string());
+                }
+            }
+        } else {
+            let (_, mut risk, _) = classify_path(mount_point, &flags);
+            if flags
+                .iter()
+                .any(|flag| flag == "read-only" || flag == "sealed")
+            {
+                risk = RiskLevel::ReadOnlySystem;
+            }
+            volumes.push(VolumeInfo {
+                name: mount_point
+                    .split('/')
+                    .rfind(|part| !part.is_empty())
+                    .unwrap_or(identifier)
+                    .to_string(),
+                identifier: identifier.to_string(),
+                role: role_from_mount_point(mount_point),
+                mount_point: Some(mount_point.to_string()),
+                mounted: true,
+                encrypted: None,
+                locked: None,
+                flags: flags.clone(),
+                capacity_bytes: None,
+                used_bytes: None,
+                available_bytes: None,
+                risk,
+                notes: if flags.iter().any(|flag| flag == "read-only" || flag == "sealed") {
+                    vec![
+                        "Mounted read-only; deleting the mountpoint will not free its backing storage."
+                            .to_string(),
+                    ]
+                } else {
+                    Vec::new()
+                },
+            });
+        }
+    }
+}
+
 pub fn scan_data_usage() -> ScanResult<Vec<UsageNode>> {
     let mut logs = vec![ScanLog::info(format!(
         "Scanning large blocks at {DATA_VOLUME_PATH}."
     ))];
-    let data = scan_usage_path(DATA_VOLUME_PATH, &mut logs);
+    let scan = scan_usage_path(DATA_VOLUME_PATH, &mut logs);
 
-    ScanResult { data, logs }
+    ScanResult {
+        data: scan.entries,
+        logs,
+    }
 }
 
 pub fn scan_user_usage() -> ScanResult<Vec<UsageNode>> {
     let home = env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
     let mut logs = vec![ScanLog::info(format!("Scanning user blocks at {home}."))];
-    let data = scan_usage_path(&home, &mut logs);
+    let scan = scan_usage_path(&home, &mut logs);
 
-    ScanResult { data, logs }
+    ScanResult {
+        data: scan.entries,
+        logs,
+    }
 }
 
 pub fn scan_path_usage(path: &str) -> ScanResult<Vec<UsageNode>> {
     let mut logs = vec![ScanLog::info(format!("Scanning blocks at {path}."))];
-    let data = scan_usage_path(path, &mut logs);
+    let scan = scan_usage_path(path, &mut logs);
 
-    ScanResult { data, logs }
+    ScanResult {
+        data: scan.entries,
+        logs,
+    }
+}
+
+pub fn start_deep_scan(path: &str) -> ScanResult<DeepScanResult> {
+    let path = path.trim();
+    if !Path::new(path).is_absolute() || path.contains('\0') || path.contains('\n') {
+        return ScanResult {
+            data: DeepScanResult {
+                path: path.to_string(),
+                entries: Vec::new(),
+                partial: true,
+                canceled: false,
+                warnings_summary: DeepScanWarningsSummary {
+                    unexpected_errors: vec![
+                        "Scan path must be an absolute local filesystem path.".to_string()
+                    ],
+                    ..DeepScanWarningsSummary::default()
+                },
+                duration_ms: 0,
+            },
+            logs: vec![ScanLog::error(
+                "Refused deep scan: path must be an absolute local filesystem path.",
+            )],
+        };
+    }
+
+    let _permit = match DeepScanPermit::acquire() {
+        Some(permit) => permit,
+        None => {
+            return ScanResult {
+                data: DeepScanResult {
+                    path: path.to_string(),
+                    entries: Vec::new(),
+                    partial: false,
+                    canceled: false,
+                    warnings_summary: DeepScanWarningsSummary {
+                        unexpected_errors: vec!["Another deep scan is already running.".to_string()],
+                        ..DeepScanWarningsSummary::default()
+                    },
+                    duration_ms: 0,
+                },
+                logs: Vec::new(),
+            };
+        }
+    };
+
+    DEEP_SCAN_CANCEL.store(false, Ordering::Release);
+    let mut logs = vec![ScanLog::info(format!("Starting deep scan at {path}."))];
+    let started = Instant::now();
+    let scan = scan_usage_path(path, &mut logs);
+    let duration_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
+    ScanResult {
+        data: DeepScanResult {
+            path: path.to_string(),
+            entries: scan.entries,
+            partial: scan.partial,
+            canceled: scan.canceled,
+            warnings_summary: scan.warnings_summary,
+            duration_ms,
+        },
+        logs,
+    }
+}
+
+pub fn cancel_deep_scan() -> ScanResult<bool> {
+    let running = DEEP_SCAN_RUNNING.load(Ordering::Acquire);
+    if running {
+        DEEP_SCAN_CANCEL.store(true, Ordering::Release);
+    }
+
+    ScanResult {
+        data: running,
+        logs: vec![if running {
+            ScanLog::warning("Cancel requested for the active deep scan.")
+        } else {
+            ScanLog::info("No active deep scan to cancel.")
+        }],
+    }
+}
+
+struct DeepScanPermit;
+
+impl DeepScanPermit {
+    fn acquire() -> Option<Self> {
+        DEEP_SCAN_RUNNING
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for DeepScanPermit {
+    fn drop(&mut self) {
+        DEEP_SCAN_RUNNING.store(false, Ordering::Release);
+    }
 }
 
 pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
@@ -118,27 +297,17 @@ pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
             continue;
         }
 
-        let flags = flags_for_path(root, &mut logs);
-        let restricted = flags.iter().any(|flag| flag == "restricted");
+        let _flags = flags_for_path(root, &mut logs);
         let root_size = disk_usage_bytes(root, &mut logs);
         findings.push(Finding {
             title: "AssetsV2 root detected".to_string(),
             path: Some((*root).to_string()),
             size_bytes: root_size,
             category: StorageCategory::AssetsV2,
-            risk: if restricted {
-                RiskLevel::ReadOnlySystem
-            } else {
-                RiskLevel::SafeToAnalyze
-            },
-            reason: if restricted {
-                "AssetsV2 root has restricted flag; normal boot should not force changes."
-                    .to_string()
-            } else {
-                "AssetsV2 can contain update and simulator assets; inspect subdirectories only."
-                    .to_string()
-            },
-            recommended_action: "Review subdirectories. Never delete AssetsV2 as a whole."
+            risk: RiskLevel::ReadOnlySystem,
+            reason: "AssetsV2 is protected in normal boot; normal cleanup must not force changes."
+                .to_string(),
+            recommended_action: "Inspect only. Use Apple tooling or Recovery for protected assets."
                 .to_string(),
             destructive: false,
         });
@@ -152,10 +321,10 @@ pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
                     path: Some(path),
                     size_bytes,
                     category: StorageCategory::AssetsV2,
-                    risk: RiskLevel::ReviewRequired,
-                    reason: "Known large MobileAsset class. Cleanup requires explicit review."
+                    risk: RiskLevel::ReadOnlySystem,
+                    reason: "Known large MobileAsset class inside protected AssetsV2 storage."
                         .to_string(),
-                    recommended_action: "MVP: review only. Later: select exact assets and confirm."
+                    recommended_action: "Inspect only in CleanerX; do not remove in normal boot."
                         .to_string(),
                     destructive: false,
                 });
@@ -168,6 +337,8 @@ pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
             "No AssetsV2 roots were found at known paths.",
         ));
     }
+
+    sort_findings_by_size(&mut findings);
 
     ScanResult {
         data: findings,
@@ -198,6 +369,8 @@ pub fn scan_developer_tools() -> ScanResult<Vec<Finding>> {
         }
     }
 
+    sort_findings_by_size(&mut findings);
+
     ScanResult {
         data: findings,
         logs,
@@ -219,6 +392,8 @@ pub fn scan_rust_artifacts() -> ScanResult<Vec<Finding>> {
             ));
         }
     }
+
+    sort_findings_by_size(&mut findings);
 
     ScanResult {
         data: findings,
@@ -246,6 +421,8 @@ pub fn scan_containers() -> ScanResult<Vec<Finding>> {
             ));
         }
     }
+
+    sort_findings_by_size(&mut findings);
 
     ScanResult {
         data: findings,
@@ -289,80 +466,10 @@ pub fn list_snapshots() -> ScanResult<Vec<Finding>> {
         )),
     }
 
+    sort_findings_by_size(&mut findings);
+
     ScanResult {
         data: findings,
-        logs,
-    }
-}
-
-pub fn cleanup_selected_items(
-    plan: crate::models::CleanupPlan,
-) -> ScanResult<crate::models::CleanupOutcome> {
-    let mut logs = vec![ScanLog::info(format!(
-        "Preparing to remove {} selected item(s).",
-        plan.items.len()
-    ))];
-
-    if plan.confirmation.as_deref() != Some("I_UNDERSTAND_DELETE") {
-        logs.push(ScanLog::error(
-            "Cleanup refused: confirmation token was missing or invalid.",
-        ));
-        return ScanResult {
-            data: crate::models::CleanupOutcome {
-                dry_run: true,
-                deleted_bytes: 0,
-                message: "Cleanup refused: confirmation token was missing or invalid.".to_string(),
-            },
-            logs,
-        };
-    }
-
-    if plan.items.is_empty() {
-        logs.push(ScanLog::warning("Cleanup refused: no items were selected."));
-        return ScanResult {
-            data: crate::models::CleanupOutcome {
-                dry_run: true,
-                deleted_bytes: 0,
-                message: "No cleanup targets were selected.".to_string(),
-            },
-            logs,
-        };
-    }
-
-    let mut deleted_bytes = 0_u64;
-
-    for item in plan.items {
-        match validate_cleanup_target(&item.path, &mut logs) {
-            Ok(path) => {
-                let estimated = item
-                    .estimated_bytes
-                    .or_else(|| disk_usage_bytes(&item.path, &mut logs))
-                    .unwrap_or_default();
-                match remove_path(&path) {
-                    Ok(()) => {
-                        deleted_bytes = deleted_bytes.saturating_add(estimated);
-                        logs.push(ScanLog::info(format!("Removed {}", path.display())));
-                    }
-                    Err(error) => logs.push(ScanLog::error(format!(
-                        "Failed to remove {}: {error}",
-                        path.display()
-                    ))),
-                }
-            }
-            Err(message) => logs.push(ScanLog::error(message)),
-        }
-    }
-
-    ScanResult {
-        data: crate::models::CleanupOutcome {
-            dry_run: false,
-            deleted_bytes,
-            message: if deleted_bytes > 0 {
-                format!("Removed approximately {deleted_bytes} bytes.")
-            } else {
-                "No selected items were removed.".to_string()
-            },
-        },
         logs,
     }
 }
@@ -384,27 +491,30 @@ fn parse_df_volumes(logs: &mut Vec<ScanLog>) -> Vec<VolumeInfo> {
 }
 
 fn parse_df_line(line: &str) -> Option<VolumeInfo> {
-    let parts = line.split_whitespace().collect::<Vec<_>>();
-    if parts.len() < 6 {
+    let mut fields = line.split_whitespace();
+    let filesystem = fields.next()?;
+    let total = fields.next()?;
+    let used = fields.next()?;
+    let available = fields.next()?;
+    let _capacity = fields.next()?;
+    let _iused = fields.next()?;
+    let _ifree = fields.next()?;
+    let _percent_iused = fields.next()?;
+    let mount_point = fields.collect::<Vec<_>>().join(" ");
+    if mount_point.is_empty() {
         return None;
     }
 
-    let total_bytes = parse_kib(parts.get(1)?);
-    let used_bytes = parse_kib(parts.get(2)?);
-    let available_bytes = parse_kib(parts.get(3)?);
-    let mount_point = if parts.len() >= 9 {
-        parts[8..].join(" ")
-    } else {
-        parts.last()?.to_string()
-    };
+    let total_bytes = parse_kib(total);
+    let used_bytes = parse_kib(used);
+    let available_bytes = parse_kib(available);
     let name = if mount_point == "/" {
         "System".to_string()
     } else {
         mount_point
             .split('/')
-            .filter(|part| !part.is_empty())
-            .last()
-            .unwrap_or(parts[0])
+            .rfind(|part| !part.is_empty())
+            .unwrap_or(filesystem)
             .to_string()
     };
     let flags = Vec::new();
@@ -412,7 +522,7 @@ fn parse_df_line(line: &str) -> Option<VolumeInfo> {
 
     Some(VolumeInfo {
         name,
-        identifier: parts[0].to_string(),
+        identifier: filesystem.to_string(),
         role: role_from_mount_point(&mount_point),
         mount_point: Some(mount_point),
         mounted: true,
@@ -537,122 +647,275 @@ fn upsert_volume(volumes: &mut Vec<VolumeInfo>, incoming: VolumeInfo) {
     }
 }
 
-fn scan_usage_path(path: &str, logs: &mut Vec<ScanLog>) -> Vec<UsageNode> {
+struct UsageScan {
+    entries: Vec<UsageNode>,
+    partial: bool,
+    canceled: bool,
+    warnings_summary: DeepScanWarningsSummary,
+}
+
+fn scan_usage_path(path: &str, logs: &mut Vec<ScanLog>) -> UsageScan {
     if !Path::new(path).exists() {
         logs.push(ScanLog::warning(format!(
             "{path} does not exist or is not mounted."
         )));
-        return Vec::new();
+        return UsageScan {
+            entries: Vec::new(),
+            partial: true,
+            canceled: false,
+            warnings_summary: DeepScanWarningsSummary {
+                vanished_paths: 1,
+                samples: vec![path.to_string()],
+                ..DeepScanWarningsSummary::default()
+            },
+        };
     }
 
-    let output = match run("du", &["-xkd", "1", path]) {
-        Ok(output) => output.stdout,
+    let scan_path = scan_operand_path(path);
+    let output = match run_partial_with_timeout_and_cancel(
+        "du",
+        &["-x", "-k", "-d", "1", &scan_path],
+        DEEP_SCAN_TIMEOUT,
+        Some(&DEEP_SCAN_CANCEL),
+    ) {
+        Ok(output) => output,
         Err(error) => {
-            logs.push(log_command_error(
-                &format!("du scan failed for {path}"),
-                &error,
-            ));
-            return Vec::new();
+            logs.push(ScanLog::error(format!(
+                "du scan failed for {path}: {error}"
+            )));
+            return UsageScan {
+                entries: Vec::new(),
+                partial: false,
+                canceled: false,
+                warnings_summary: DeepScanWarningsSummary {
+                    unexpected_errors: vec![error.to_string()],
+                    ..DeepScanWarningsSummary::default()
+                },
+            };
         }
     };
 
     let mut nodes = output
+        .stdout
         .lines()
         .filter_map(|line| parse_du_line(line, logs))
         .collect::<Vec<_>>();
+    append_direct_file_nodes(path, &mut nodes, logs);
     nodes.sort_by(|left, right| right.size_bytes.cmp(&left.size_bytes));
-    nodes
+
+    let stderr_summary = summarize_du_stderr(&output.stderr);
+    let warning_messages = stderr_summary.warning_messages();
+    let has_expected_warnings = stderr_summary.has_expected_warnings();
+    let mut warnings_summary = stderr_summary.warnings;
+    if output.timed_out {
+        let message = format!(
+            "du timed out after {}s and the process was stopped.",
+            DEEP_SCAN_TIMEOUT.as_secs()
+        );
+        logs.push(ScanLog::warning(message.clone()));
+        push_sample(&mut warnings_summary.samples, &message);
+    }
+    if output.canceled {
+        let message = "du scan was canceled and the process was stopped.".to_string();
+        logs.push(ScanLog::warning(message.clone()));
+        push_sample(&mut warnings_summary.samples, &message);
+    }
+    for warning in warning_messages {
+        logs.push(ScanLog::warning(warning));
+    }
+    for error in &warnings_summary.unexpected_errors {
+        logs.push(ScanLog::error(format!("du unexpected error: {error}")));
+    }
+
+    let has_unexpected_errors = !warnings_summary.unexpected_errors.is_empty();
+    if nodes.is_empty() && has_unexpected_errors {
+        logs.push(ScanLog::error(format!(
+            "du scan for {path} did not return parseable entries."
+        )));
+    } else if nodes.is_empty() && !output.success && has_expected_warnings {
+        logs.push(ScanLog::warning(format!(
+            "du scan for {path} returned no visible entries after expected macOS permission skips."
+        )));
+    } else if nodes.is_empty() && output.timed_out {
+        logs.push(ScanLog::warning(format!(
+            "du scan for {path} was stopped by timeout before visible entries were returned."
+        )));
+    } else if nodes.is_empty() && output.canceled {
+        logs.push(ScanLog::warning(format!(
+            "du scan for {path} was canceled before visible entries were returned."
+        )));
+    }
+
+    if !output.success && !nodes.is_empty() {
+        if output.timed_out {
+            logs.push(ScanLog::warning(format!(
+                "du scan for {path} returned partial results before timeout."
+            )));
+        } else if output.canceled {
+            logs.push(ScanLog::warning(format!(
+                "du scan for {path} returned partial results before cancellation."
+            )));
+        } else {
+            logs.push(ScanLog::warning(format!(
+                "du scan for {path} returned partial results with exit status {}.",
+                output
+                    .status
+                    .map(|status| status.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            )));
+        }
+    }
+
+    UsageScan {
+        entries: {
+            register_usage_nodes(&nodes);
+            nodes
+        },
+        partial: !output.success
+            || output.timed_out
+            || output.canceled
+            || has_expected_warnings
+            || has_unexpected_errors,
+        canceled: output.canceled,
+        warnings_summary,
+    }
 }
 
-fn validate_cleanup_target(path: &str, logs: &mut Vec<ScanLog>) -> Result<PathBuf, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("Cleanup refused: empty path.".to_string());
-    }
-
-    let target = PathBuf::from(trimmed);
-    if !target.is_absolute() {
-        return Err(format!(
-            "Cleanup refused for {trimmed}: path is not absolute."
-        ));
-    }
-
-    if is_broad_or_system_target(trimmed) {
-        return Err(format!(
-            "Cleanup refused for {trimmed}: target is too broad or system-owned."
-        ));
-    }
-
-    if !target.exists() {
-        return Err(format!(
-            "Cleanup refused for {trimmed}: target does not exist."
-        ));
-    }
-
-    let flags = flags_for_path(trimmed, logs);
-    let (_, risk, reason) = classify_path(trimmed, &flags);
-    if flags.iter().any(|flag| flag == "restricted") || risk == RiskLevel::ReadOnlySystem {
-        return Err(format!(
-            "Cleanup refused for {trimmed}: read-only/system target. {reason}"
-        ));
-    }
-
-    if risk == RiskLevel::Dangerous {
-        return Err(format!(
-            "Cleanup refused for {trimmed}: dangerous target. {reason}"
-        ));
-    }
-
-    Ok(target)
-}
-
-fn is_broad_or_system_target(path: &str) -> bool {
-    matches!(
-        path,
-        "/" | "/System"
-            | "/Library"
-            | "/Applications"
-            | "/Users"
-            | "/tmp"
-            | "/private/tmp"
-            | "/opt"
-            | "/opt/homebrew"
-            | "/System/Volumes"
-            | "/System/Volumes/Data"
-            | "/System/Volumes/Data/System"
-            | "/System/Volumes/Data/Library"
-            | "/System/Volumes/Data/Users"
-            | "/System/Library/AssetsV2"
-            | "/System/Volumes/Data/System/Library/AssetsV2"
-    )
-}
-
-fn remove_path(path: &Path) -> std::io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        fs::remove_dir_all(path)
+fn scan_operand_path(path: &str) -> String {
+    if path == "/tmp" {
+        "/tmp/".to_string()
     } else {
-        fs::remove_file(path)
+        path.to_string()
+    }
+}
+
+fn append_direct_file_nodes(path: &str, nodes: &mut Vec<UsageNode>, logs: &mut Vec<ScanLog>) {
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        let path_string = entry_path.to_string_lossy().to_string();
+        if nodes.iter().any(|node| node.path == path_string) {
+            continue;
+        }
+
+        let Ok(metadata) = fs::symlink_metadata(&entry_path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+
+        let flags = flags_for_path(&path_string, logs);
+        let (category, risk, _) = classify_path(&path_string, &flags);
+        nodes.push(UsageNode {
+            id: cleanup_candidate_id(&path_string),
+            path: path_string,
+            kind: UsageKind::File,
+            size_bytes: metadata.len(),
+            category,
+            risk,
+            flags,
+            children: Vec::new(),
+        });
     }
 }
 
 fn parse_du_line(line: &str, logs: &mut Vec<ScanLog>) -> Option<UsageNode> {
-    let mut parts = line.split_whitespace();
-    let size_kib = parts.next()?;
-    let path = parts.collect::<Vec<_>>().join(" ");
+    let (size_kib, path) = line.split_once(char::is_whitespace)?;
     let path = path.trim();
     let size_bytes = size_kib.parse::<u64>().ok()?.saturating_mul(1024);
     let flags = flags_for_path(path, logs);
     let (category, risk, _) = classify_path(path, &flags);
+    let kind = fs::symlink_metadata(path)
+        .map(|metadata| {
+            if metadata.is_file() {
+                UsageKind::File
+            } else {
+                UsageKind::Folder
+            }
+        })
+        .unwrap_or(UsageKind::Folder);
 
     Some(UsageNode {
+        id: cleanup_candidate_id(path),
         path: path.to_string(),
+        kind,
         size_bytes,
         category,
         risk,
         flags,
         children: Vec::new(),
     })
+}
+
+struct DuStderrSummary {
+    warnings: DeepScanWarningsSummary,
+}
+
+fn summarize_du_stderr(stderr: &str) -> DuStderrSummary {
+    let mut warnings = DeepScanWarningsSummary::default();
+
+    for line in stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if line.contains("Permission denied") {
+            warnings.permission_denied += 1;
+            push_sample(&mut warnings.samples, line);
+        } else if line.contains("Operation not permitted") {
+            warnings.operation_not_permitted += 1;
+            push_sample(&mut warnings.samples, line);
+        } else if line.contains("No such file or directory") {
+            warnings.vanished_paths += 1;
+            push_sample(&mut warnings.samples, line);
+        } else {
+            push_sample(&mut warnings.samples, line);
+            push_sample(&mut warnings.unexpected_errors, line);
+        }
+    }
+
+    DuStderrSummary { warnings }
+}
+
+impl DuStderrSummary {
+    fn has_expected_warnings(&self) -> bool {
+        self.warnings.permission_denied > 0
+            || self.warnings.operation_not_permitted > 0
+            || self.warnings.vanished_paths > 0
+    }
+
+    fn warning_messages(&self) -> Vec<String> {
+        let mut messages = Vec::new();
+        if self.warnings.permission_denied > 0 {
+            messages.push(format!(
+                "du skipped {} path(s) due to Permission denied.",
+                self.warnings.permission_denied
+            ));
+        }
+        if self.warnings.operation_not_permitted > 0 {
+            messages.push(format!(
+                "du skipped {} path(s) due to Operation not permitted.",
+                self.warnings.operation_not_permitted
+            ));
+        }
+        if self.warnings.vanished_paths > 0 {
+            messages.push(format!(
+                "du skipped {} path(s) that disappeared during the scan.",
+                self.warnings.vanished_paths
+            ));
+        }
+        messages
+    }
+}
+
+fn push_sample(samples: &mut Vec<String>, line: &str) {
+    if samples.len() < 3 {
+        samples.push(line.to_string());
+    }
 }
 
 fn flags_for_path(path: &str, logs: &mut Vec<ScanLog>) -> Vec<String> {
@@ -767,6 +1030,16 @@ fn summary_warnings(volumes: &[VolumeInfo]) -> Vec<Finding> {
     findings
 }
 
+fn sort_findings_by_size(findings: &mut [Finding]) {
+    findings.sort_by(|left, right| {
+        right
+            .size_bytes
+            .unwrap_or(0)
+            .cmp(&left.size_bytes.unwrap_or(0))
+            .then_with(|| left.title.cmp(&right.title))
+    });
+}
+
 fn role_from_mount_point(mount_point: &str) -> Option<String> {
     let roles = HashMap::from([
         ("/", "System"),
@@ -820,11 +1093,39 @@ mod tests {
     }
 
     #[test]
-    fn broad_cleanup_targets_are_refused() {
-        assert!(is_broad_or_system_target("/"));
-        assert!(is_broad_or_system_target("/Users"));
-        assert!(is_broad_or_system_target("/System/Volumes/Data"));
-        assert!(is_broad_or_system_target("/opt/homebrew"));
-        assert!(!is_broad_or_system_target("/Users/me/Library/Caches/app"));
+    fn summarizes_expected_du_permission_errors() {
+        let summary = summarize_du_stderr(
+            "du: /System/Volumes/Data/.Spotlight-V100: Permission denied\n\
+             du: /System/Volumes/Data/private/var/db: Operation not permitted\n\
+             du: /tmp/gone: No such file or directory",
+        );
+        assert_eq!(summary.warnings.permission_denied, 1);
+        assert_eq!(summary.warnings.operation_not_permitted, 1);
+        assert_eq!(summary.warnings.vanished_paths, 1);
+        assert!(summary.warnings.unexpected_errors.is_empty());
+        assert_eq!(summary.warnings.samples.len(), 3);
+    }
+
+    #[test]
+    fn summarizes_unexpected_du_errors() {
+        let summary = summarize_du_stderr("du: strange failure");
+        assert_eq!(summary.warnings.permission_denied, 0);
+        assert_eq!(summary.warnings.unexpected_errors.len(), 1);
+        assert_eq!(summary.warnings.samples.len(), 1);
+    }
+
+    #[test]
+    fn parses_du_line_with_spaces_in_path() {
+        let mut logs = Vec::new();
+        let parsed = parse_du_line(
+            "1024\t/Users/me/Library/Application Support/App Cache",
+            &mut logs,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.path,
+            "/Users/me/Library/Application Support/App Cache"
+        );
+        assert_eq!(parsed.size_bytes, 1024 * 1024);
     }
 }

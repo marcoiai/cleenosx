@@ -31,6 +31,13 @@ pub enum StorageCategory {
     Unknown,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageKind {
+    File,
+    Folder,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VolumeInfo {
@@ -52,12 +59,35 @@ pub struct VolumeInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageNode {
+    pub id: String,
     pub path: String,
+    pub kind: UsageKind,
     pub size_bytes: u64,
     pub category: StorageCategory,
     pub risk: RiskLevel,
     pub flags: Vec<String>,
     pub children: Vec<UsageNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepScanResult {
+    pub path: String,
+    pub entries: Vec<UsageNode>,
+    pub partial: bool,
+    pub canceled: bool,
+    pub warnings_summary: DeepScanWarningsSummary,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepScanWarningsSummary {
+    pub permission_denied: usize,
+    pub operation_not_permitted: usize,
+    pub vanished_paths: usize,
+    pub unexpected_errors: Vec<String>,
+    pub samples: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,26 +123,63 @@ pub struct Overview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CleanupPlan {
-    pub items: Vec<CleanupItem>,
-    pub confirmation: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CleanupItem {
-    pub path: String,
-    pub risk: RiskLevel,
-    pub estimated_bytes: Option<u64>,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CleanupOutcome {
     pub dry_run: bool,
     pub deleted_bytes: u64,
     pub message: String,
+    pub removed_items: Vec<CleanupItemOutcome>,
+    pub failed_items: Vec<CleanupItemOutcome>,
+    pub needs_root: bool,
+    pub root_continuation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupItemOutcome {
+    pub path: String,
+    pub message: String,
+    pub needs_root: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupSelection {
+    pub item_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedCleanupItem {
+    pub id: String,
+    pub path: String,
+    pub kind: UsageKind,
+    pub risk: RiskLevel,
+    pub estimated_bytes: u64,
+    pub reason: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedCleanupPlan {
+    pub plan_id: String,
+    pub items: Vec<PreparedCleanupItem>,
+    pub estimated_recoverable_bytes: u64,
+    pub warnings: Vec<String>,
+    pub final_confirmation_phrase: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupExecution {
+    pub plan_id: String,
+    pub final_confirmation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupSettings {
+    pub allow_project_root_cleanup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

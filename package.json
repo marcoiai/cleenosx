@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:appstore:build": "CLEANERX_DISTRIBUTION=app-store VITE_CLEANERX_DISTRIBUTION=app-store tauri build --no-bundle",
+    "tauri:appstore:bundle": "CLEANERX_DISTRIBUTION=app-store VITE_CLEANERX_DISTRIBUTION=app-store tauri bundle --bundles app --config src-tauri/tauri.appstore.conf.json",
+    "tauri:appstore": "pnpm tauri:appstore:build && pnpm tauri:appstore:bundle"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -29,4 +32,3 @@
     "vite": "^6.0.7"
   }
 }
-

@@ -14,16 +14,18 @@ const BLUE: &str = "\x1b[34m";
 const GRAY: &str = "\x1b[90m";
 
 fn main() {
-    if std::env::args()
-        .skip(1)
-        .any(|arg| arg == "--help" || arg == "-h")
-    {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.iter().any(|arg| arg == "--recovery-script") {
+        println!("{}", cleanerx_core::generate_recovery_script());
+        return;
+    }
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print_help();
         return;
     }
 
     title();
-    println!("{GREEN}🟢 Safe mode is enabled. This MVP never deletes files.{RESET}");
+    println!("{YELLOW}Cleanup requires explicit typed confirmation. Scans are read-only until cleanup is chosen.{RESET}");
 
     loop {
         println!("\n{BOLD}Menu{RESET}");
@@ -53,15 +55,15 @@ fn main() {
 
 fn print_help() {
     title();
-    println!("Usage: cleanerx");
+    println!("Usage: cx");
+    println!("       cx --recovery-script > cx.sh");
     println!();
-    println!("Starts the guided read-only terminal interface.");
-    println!("MVP cleanup actions are disabled.");
+    println!("Starts the guided terminal interface and can print the Recovery cleanup script.");
 }
 
 fn title() {
     println!("\n{BOLD}{BLUE}CleanerX CLI{RESET}");
-    println!("{GRAY}Guided macOS storage investigation. Read-only by default.{RESET}");
+    println!("{GRAY}Guided macOS storage investigation and explicit cleanup workflows.{RESET}");
     println!("{GRAY}--------------------------------------------------------{RESET}");
 }
 
@@ -134,7 +136,7 @@ fn snapshots() {
 
 fn recovery_script() {
     println!("\n{BOLD}Recovery Script{RESET}");
-    println!("{DIM}Copy this into a file only after reviewing it. It remains safe-mode in the MVP.{RESET}\n");
+    println!("{DIM}Review before running. Destructive cleanup requires typed confirmations in Recovery.{RESET}\n");
     println!("{}", cleanerx_core::generate_recovery_script());
 }
 

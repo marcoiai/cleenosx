@@ -21,7 +21,7 @@ export function riskMeta(risk: RiskLevel) {
     case "reviewRequired":
       return { label: "Review", className: "bg-orange-50 text-signal-review ring-orange-200" };
     case "dangerous":
-      return { label: "Danger", className: "bg-red-50 text-signal-danger ring-red-200" };
+      return { label: "Blocked", className: "bg-red-50 text-signal-danger ring-red-200" };
     case "readOnlySystem":
       return { label: "Read-only", className: "bg-slate-100 text-signal-system ring-slate-300" };
   }
@@ -47,4 +47,3 @@ export function categoryLabel(category: StorageCategory) {
   };
   return labels[category];
 }
-

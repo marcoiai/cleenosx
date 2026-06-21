@@ -1,12 +1,26 @@
+import { FolderOpen } from "lucide-react";
+import { useMemo } from "react";
 import { formatBytes } from "../format";
 import type { VolumeInfo } from "../types";
 import { RiskChip } from "./RiskChip";
 
 interface VolumeTableProps {
   volumes: VolumeInfo[];
+  onScanPath?: (path: string) => void;
+  disabled?: boolean;
 }
 
-export function VolumeTable({ volumes }: VolumeTableProps) {
+export function VolumeTable({ volumes, onScanPath, disabled = false }: VolumeTableProps) {
+  const sortedVolumes = useMemo(
+    () =>
+      [...volumes].sort(
+        (left, right) =>
+          volumeSortBytes(right) - volumeSortBytes(left) ||
+          left.name.localeCompare(right.name),
+      ),
+    [volumes],
+  );
+
   return (
     <section className="rounded-lg border border-slate-200 bg-white shadow-material">
       <div className="border-b border-slate-200 px-4 py-3">
@@ -23,10 +37,11 @@ export function VolumeTable({ volumes }: VolumeTableProps) {
               <th className="px-4 py-3">Used</th>
               <th className="px-4 py-3">Available</th>
               <th className="px-4 py-3">Risk</th>
+              <th className="px-4 py-3 text-right">Action</th>
             </tr>
           </thead>
           <tbody>
-            {volumes.map((volume) => (
+            {sortedVolumes.map((volume) => (
               <tr key={`${volume.identifier}-${volume.mountPoint ?? "none"}`} className="border-t border-slate-100 align-top">
                 <td className="px-4 py-3 font-medium text-ink-strong">
                   {volume.name}
@@ -43,11 +58,22 @@ export function VolumeTable({ volumes }: VolumeTableProps) {
                 <td className="px-4 py-3 text-ink-body">{formatBytes(volume.usedBytes)}</td>
                 <td className="px-4 py-3 text-ink-body">{formatBytes(volume.availableBytes)}</td>
                 <td className="px-4 py-3"><RiskChip risk={volume.risk} /></td>
+                <td className="px-4 py-3 text-right">
+                  <button
+                    className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg bg-slate-100 px-3 text-xs font-semibold text-ink-body hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled={!volume.mountPoint || !onScanPath || disabled}
+                    onClick={() => volume.mountPoint && onScanPath?.(volume.mountPoint)}
+                    title={volume.mountPoint ? "Scan mount point" : "Volume is not mounted"}
+                  >
+                    <FolderOpen size={14} />
+                    Scan
+                  </button>
+                </td>
               </tr>
             ))}
-            {volumes.length === 0 && (
+            {sortedVolumes.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-ink-muted">No volume data yet.</td>
+                <td colSpan={8} className="px-4 py-8 text-center text-ink-muted">No volume data yet.</td>
               </tr>
             )}
           </tbody>
@@ -57,3 +83,6 @@ export function VolumeTable({ volumes }: VolumeTableProps) {
   );
 }
 
+function volumeSortBytes(volume: VolumeInfo) {
+  return volume.usedBytes ?? volume.capacityBytes ?? 0;
+}

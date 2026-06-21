@@ -6,4 +6,4 @@ src-tauri/gen/
 .DS_Store
 *.log
 *.local
-
+src-tauri/profiles/*.provisionprofile

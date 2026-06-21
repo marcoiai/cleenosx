@@ -4,6 +4,15 @@ pub fn classify_path(path: &str, flags: &[String]) -> (StorageCategory, RiskLeve
     let normalized = path.replace('\\', "/");
     let restricted = flags.iter().any(|flag| flag == "restricted");
 
+    if is_assets_v2_area(&normalized) {
+        return (
+            StorageCategory::AssetsV2,
+            RiskLevel::ReadOnlySystem,
+            "AssetsV2 is protected in normal boot; inspect only or use Apple tooling/Recovery."
+                .to_string(),
+        );
+    }
+
     if restricted {
         return (
             StorageCategory::MacOsApfs,
@@ -12,18 +21,26 @@ pub fn classify_path(path: &str, flags: &[String]) -> (StorageCategory, RiskLeve
         );
     }
 
+    if normalized.starts_with("/Library/Developer/CoreSimulator/Cryptex/")
+        || normalized.starts_with("/Library/Developer/CoreSimulator/Volumes/")
+        || normalized.starts_with("/System/Cryptexes/")
+        || normalized.starts_with("/System/Volumes/Preboot/")
+    {
+        return (
+            StorageCategory::MacOsApfs,
+            RiskLevel::ReadOnlySystem,
+            "Read-only macOS runtime area; remove runtimes with Apple tooling or from Recovery only."
+                .to_string(),
+        );
+    }
+
     if normalized == "/System"
         || normalized == "/Library"
         || normalized == "/opt"
         || normalized == "/System/Volumes/Data"
-        || normalized.ends_with("/AssetsV2")
     {
         return (
-            if normalized.ends_with("/AssetsV2") {
-                StorageCategory::AssetsV2
-            } else {
-                StorageCategory::MacOsApfs
-            },
+            StorageCategory::MacOsApfs,
             RiskLevel::SafeToAnalyze,
             "Top-level/system location is safe to inspect but not safe to delete as a whole."
                 .to_string(),
@@ -142,6 +159,17 @@ pub fn classify_path(path: &str, flags: &[String]) -> (StorageCategory, RiskLeve
         RiskLevel::SafeToAnalyze,
         "Unknown block; inspect before making any recommendation.".to_string(),
     )
+}
+
+fn is_assets_v2_area(path: &str) -> bool {
+    const ROOTS: [&str; 2] = [
+        "/System/Library/AssetsV2",
+        "/System/Volumes/Data/System/Library/AssetsV2",
+    ];
+
+    ROOTS
+        .iter()
+        .any(|root| path == *root || path.starts_with(&format!("{root}/")))
 }
 
 pub fn finding_for_path(title: &str, path: &str, size_bytes: Option<u64>) -> Finding {

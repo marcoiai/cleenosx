@@ -63,6 +63,8 @@ pnpm build
 pnpm tauri:build
 ```
 
+For Mac App Store preparation, see [docs/APP_STORE.md](docs/APP_STORE.md).
+
 ## Test And Check
 
 ```sh
@@ -97,3 +99,4 @@ CleanerX treats macOS storage cleanup as a high-risk operation. The MVP follows 
 
 - [Context](docs/CONTEXT.md) explains the product problem, users, goals, and MVP boundaries.
 - [Architecture](docs/ARCHITECTURE.md) explains the workspace, data flow, scanners, safety rules, and extension points.
+- [Mac App Store](docs/APP_STORE.md) tracks Store-specific signing, sandbox, and upload work.

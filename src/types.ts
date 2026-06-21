@@ -22,6 +22,8 @@ export type StorageCategory =
   | "volumesExtra"
   | "unknown";
 
+export type UsageKind = "file" | "folder";
+
 export type LogLevel = "info" | "warning" | "error";
 
 export interface ScanLog {
@@ -35,22 +37,51 @@ export interface ScanResult<T> {
   logs: ScanLog[];
 }
 
-export interface CleanupItem {
-  path: string;
-  risk: RiskLevel;
-  estimatedBytes?: number | null;
-  reason: string;
-}
-
-export interface CleanupPlan {
-  items: CleanupItem[];
-  confirmation?: string | null;
-}
-
 export interface CleanupOutcome {
   dryRun: boolean;
   deletedBytes: number;
   message: string;
+  removedItems: CleanupItemOutcome[];
+  failedItems: CleanupItemOutcome[];
+  needsRoot: boolean;
+  rootContinuationId?: string | null;
+}
+
+export interface CleanupItemOutcome {
+  path: string;
+  message: string;
+  needsRoot: boolean;
+}
+
+export interface CleanupSelection {
+  itemIds: string[];
+}
+
+export interface PreparedCleanupItem {
+  id: string;
+  path: string;
+  kind: UsageKind;
+  risk: RiskLevel;
+  estimatedBytes: number;
+  reason: string;
+  action: string;
+}
+
+export interface PreparedCleanupPlan {
+  planId: string;
+  items: PreparedCleanupItem[];
+  estimatedRecoverableBytes: number;
+  warnings: string[];
+  finalConfirmationPhrase: string;
+}
+
+export interface CleanupExecution {
+  planId: string;
+  finalConfirmation: string;
+}
+
+export interface CleanupSettings {
+  allowProjectRootCleanup: boolean;
 }
 
 export interface StorageSummary {
@@ -77,12 +108,31 @@ export interface VolumeInfo {
 }
 
 export interface UsageNode {
+  id: string;
   path: string;
+  kind: UsageKind;
   sizeBytes: number;
   category: StorageCategory;
   risk: RiskLevel;
   flags: string[];
   children: UsageNode[];
+}
+
+export interface DeepScanResult {
+  path: string;
+  entries: UsageNode[];
+  partial: boolean;
+  canceled: boolean;
+  warningsSummary: DeepScanWarningsSummary;
+  durationMs: number;
+}
+
+export interface DeepScanWarningsSummary {
+  permissionDenied: number;
+  operationNotPermitted: number;
+  vanishedPaths: number;
+  unexpectedErrors: string[];
+  samples: string[];
 }
 
 export interface Finding {
