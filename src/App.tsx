@@ -46,7 +46,7 @@ const navItems: Array<{ id: View; label: string; icon: typeof Activity }> = [
   { id: "volumes", label: "Volumes", icon: HardDrive },
   { id: "scanner", label: "Scanner", icon: FolderTree },
   { id: "findings", label: "Findings", icon: Database },
-  { id: "review", label: "Review", icon: ShieldCheck },
+  { id: "review", label: "Clear", icon: ShieldCheck },
   { id: "recovery", label: "Recovery", icon: TerminalSquare },
   { id: "settings", label: "Settings", icon: Settings },
 ];
@@ -226,7 +226,7 @@ function App() {
               </div>
             )}
 
-            {activeView === "review" && <ReviewPanel />}
+            {activeView === "review" && <ReviewPanel initialNodes={visibleUsage} onLogs={pushLogs} />}
             {activeView === "recovery" && <RecoveryPanel />}
             {activeView === "settings" && <SettingsPanel />}
           </div>
@@ -297,7 +297,7 @@ function titleForView(view: View) {
     volumes: "Volumes / Partitions",
     scanner: "Large Block Scanner",
     findings: "Findings",
-    review: "Review",
+    review: "Clear",
     recovery: "Recovery",
     settings: "Settings",
   };
@@ -310,7 +310,7 @@ function subtitleForView(view: View) {
     volumes: "Mounted and unmounted volume hints from macOS tools.",
     scanner: "Read-only scan of large storage blocks.",
     findings: "Assets, snapshots, developer tools, containers, and risk labels.",
-    review: "Safe-mode cleanup review surface.",
+    review: "Drill down, select exact files or directories, and remove confirmed targets.",
     recovery: "Generated companion script for Recovery workflows.",
     settings: "Reserved configuration surface.",
   };
@@ -318,4 +318,3 @@ function subtitleForView(view: View) {
 }
 
 export default App;
-

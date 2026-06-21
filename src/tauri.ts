@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CleanupOutcome,
+  CleanupPlan,
   Finding,
   Overview,
   ScanResult,
@@ -17,6 +19,10 @@ export async function scanVolumes() {
 
 export async function scanDataUsage() {
   return invoke<ScanResult<UsageNode[]>>("scan_data_usage");
+}
+
+export async function scanPathUsage(path: string) {
+  return invoke<ScanResult<UsageNode[]>>("scan_path_usage", { path });
 }
 
 export async function scanAssetsV2() {
@@ -43,3 +49,6 @@ export async function generateRecoveryScript() {
   return invoke<string>("generate_recovery_script");
 }
 
+export async function cleanupSelectedItems(plan: CleanupPlan) {
+  return invoke<ScanResult<CleanupOutcome>>("cleanup_selected_items", { plan });
+}

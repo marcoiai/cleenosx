@@ -22,6 +22,10 @@ pub fn scan_user_usage() -> ScanResult<Vec<UsageNode>> {
     scanners::scan_user_usage()
 }
 
+pub fn scan_path_usage(path: String) -> ScanResult<Vec<UsageNode>> {
+    scanners::scan_path_usage(&path)
+}
+
 pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
     scanners::scan_assets_v2()
 }
@@ -46,19 +50,8 @@ pub fn generate_recovery_script() -> String {
     recovery::generate_recovery_script()
 }
 
-pub fn cleanup_selected_items(_plan: CleanupPlan) -> ScanResult<CleanupOutcome> {
-    let logs = vec![ScanLog::info(
-        "MVP safe mode: cleanup is dry-run only. No files were deleted.",
-    )];
-
-    ScanResult {
-        data: CleanupOutcome {
-            dry_run: true,
-            deleted_bytes: 0,
-            message: "Cleanup is disabled in the MVP. Review-only plan generated.".to_string(),
-        },
-        logs,
-    }
+pub fn cleanup_selected_items(plan: CleanupPlan) -> ScanResult<CleanupOutcome> {
+    scanners::cleanup_selected_items(plan)
 }
 
 pub fn thin_snapshots() -> ScanResult<CleanupOutcome> {

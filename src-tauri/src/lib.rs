@@ -23,6 +23,11 @@ fn scan_user_usage() -> ScanResult<Vec<UsageNode>> {
 }
 
 #[tauri::command]
+fn scan_path_usage(path: String) -> ScanResult<Vec<UsageNode>> {
+    cleanerx_core::scan_path_usage(path)
+}
+
+#[tauri::command]
 fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
     cleanerx_core::scan_assets_v2()
 }
@@ -69,6 +74,7 @@ pub fn run() {
             scan_volumes,
             scan_data_usage,
             scan_user_usage,
+            scan_path_usage,
             scan_assets_v2,
             scan_developer_tools,
             scan_rust_artifacts,

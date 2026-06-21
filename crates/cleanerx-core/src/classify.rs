@@ -54,7 +54,8 @@ pub fn classify_path(path: &str, flags: &[String]) -> (StorageCategory, RiskLeve
         return (
             StorageCategory::RustArtifacts,
             RiskLevel::Attention,
-            "Rust build artifacts can usually be recreated with cargo.".to_string(),
+            "Rust target build artifacts can usually be recreated by Cargo after cleanup."
+                .to_string(),
         );
     }
 
@@ -145,6 +146,7 @@ pub fn classify_path(path: &str, flags: &[String]) -> (StorageCategory, RiskLeve
 
 pub fn finding_for_path(title: &str, path: &str, size_bytes: Option<u64>) -> Finding {
     let (category, risk, reason) = classify_path(path, &[]);
+    let recommended_action = recommended_action_for(&category, &risk).to_string();
     Finding {
         title: title.to_string(),
         path: Some(path.to_string()),
@@ -152,8 +154,21 @@ pub fn finding_for_path(title: &str, path: &str, size_bytes: Option<u64>) -> Fin
         category,
         risk,
         reason,
-        recommended_action: "Review only in the MVP. No automatic cleanup.".to_string(),
+        recommended_action,
         destructive: false,
+    }
+}
+
+fn recommended_action_for(category: &StorageCategory, risk: &RiskLevel) -> &'static str {
+    match (category, risk) {
+        (&StorageCategory::RustArtifacts, &RiskLevel::Attention) => {
+            "Good cleanup candidate after user confirmation. Cargo can rebuild it later."
+        }
+        (_, &RiskLevel::Dangerous) | (_, &RiskLevel::ReadOnlySystem) => {
+            "Do not remove from CleanerX."
+        }
+        (_, &RiskLevel::ReviewRequired) => "Review exact contents before selecting for cleanup.",
+        _ => "Review path before selecting for cleanup.",
     }
 }
 
@@ -166,6 +181,15 @@ mod tests {
         let (category, risk, _) = classify_path("/Users/marco/Projects/app/target", &[]);
         assert_eq!(category, StorageCategory::RustArtifacts);
         assert_eq!(risk, RiskLevel::Attention);
+    }
+
+    #[test]
+    fn nested_target_is_rust_artifact_before_project_source_rule() {
+        let (category, risk, reason) =
+            classify_path("/Users/marco/Projects/app/crates/core/target/debug", &[]);
+        assert_eq!(category, StorageCategory::RustArtifacts);
+        assert_eq!(risk, RiskLevel::Attention);
+        assert!(reason.contains("Cargo"));
     }
 
     #[test]

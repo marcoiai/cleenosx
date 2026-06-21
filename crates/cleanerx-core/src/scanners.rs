@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 const DATA_VOLUME_PATH: &str = "/System/Volumes/Data";
 const ASSETS_V2_PATHS: &[&str] = &[
@@ -97,6 +98,13 @@ pub fn scan_user_usage() -> ScanResult<Vec<UsageNode>> {
     let home = env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
     let mut logs = vec![ScanLog::info(format!("Scanning user blocks at {home}."))];
     let data = scan_usage_path(&home, &mut logs);
+
+    ScanResult { data, logs }
+}
+
+pub fn scan_path_usage(path: &str) -> ScanResult<Vec<UsageNode>> {
+    let mut logs = vec![ScanLog::info(format!("Scanning blocks at {path}."))];
+    let data = scan_usage_path(path, &mut logs);
 
     ScanResult { data, logs }
 }
@@ -283,6 +291,78 @@ pub fn list_snapshots() -> ScanResult<Vec<Finding>> {
 
     ScanResult {
         data: findings,
+        logs,
+    }
+}
+
+pub fn cleanup_selected_items(
+    plan: crate::models::CleanupPlan,
+) -> ScanResult<crate::models::CleanupOutcome> {
+    let mut logs = vec![ScanLog::info(format!(
+        "Preparing to remove {} selected item(s).",
+        plan.items.len()
+    ))];
+
+    if plan.confirmation.as_deref() != Some("I_UNDERSTAND_DELETE") {
+        logs.push(ScanLog::error(
+            "Cleanup refused: confirmation token was missing or invalid.",
+        ));
+        return ScanResult {
+            data: crate::models::CleanupOutcome {
+                dry_run: true,
+                deleted_bytes: 0,
+                message: "Cleanup refused: confirmation token was missing or invalid.".to_string(),
+            },
+            logs,
+        };
+    }
+
+    if plan.items.is_empty() {
+        logs.push(ScanLog::warning("Cleanup refused: no items were selected."));
+        return ScanResult {
+            data: crate::models::CleanupOutcome {
+                dry_run: true,
+                deleted_bytes: 0,
+                message: "No cleanup targets were selected.".to_string(),
+            },
+            logs,
+        };
+    }
+
+    let mut deleted_bytes = 0_u64;
+
+    for item in plan.items {
+        match validate_cleanup_target(&item.path, &mut logs) {
+            Ok(path) => {
+                let estimated = item
+                    .estimated_bytes
+                    .or_else(|| disk_usage_bytes(&item.path, &mut logs))
+                    .unwrap_or_default();
+                match remove_path(&path) {
+                    Ok(()) => {
+                        deleted_bytes = deleted_bytes.saturating_add(estimated);
+                        logs.push(ScanLog::info(format!("Removed {}", path.display())));
+                    }
+                    Err(error) => logs.push(ScanLog::error(format!(
+                        "Failed to remove {}: {error}",
+                        path.display()
+                    ))),
+                }
+            }
+            Err(message) => logs.push(ScanLog::error(message)),
+        }
+    }
+
+    ScanResult {
+        data: crate::models::CleanupOutcome {
+            dry_run: false,
+            deleted_bytes,
+            message: if deleted_bytes > 0 {
+                format!("Removed approximately {deleted_bytes} bytes.")
+            } else {
+                "No selected items were removed.".to_string()
+            },
+        },
         logs,
     }
 }
@@ -484,6 +564,78 @@ fn scan_usage_path(path: &str, logs: &mut Vec<ScanLog>) -> Vec<UsageNode> {
     nodes
 }
 
+fn validate_cleanup_target(path: &str, logs: &mut Vec<ScanLog>) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Cleanup refused: empty path.".to_string());
+    }
+
+    let target = PathBuf::from(trimmed);
+    if !target.is_absolute() {
+        return Err(format!(
+            "Cleanup refused for {trimmed}: path is not absolute."
+        ));
+    }
+
+    if is_broad_or_system_target(trimmed) {
+        return Err(format!(
+            "Cleanup refused for {trimmed}: target is too broad or system-owned."
+        ));
+    }
+
+    if !target.exists() {
+        return Err(format!(
+            "Cleanup refused for {trimmed}: target does not exist."
+        ));
+    }
+
+    let flags = flags_for_path(trimmed, logs);
+    let (_, risk, reason) = classify_path(trimmed, &flags);
+    if flags.iter().any(|flag| flag == "restricted") || risk == RiskLevel::ReadOnlySystem {
+        return Err(format!(
+            "Cleanup refused for {trimmed}: read-only/system target. {reason}"
+        ));
+    }
+
+    if risk == RiskLevel::Dangerous {
+        return Err(format!(
+            "Cleanup refused for {trimmed}: dangerous target. {reason}"
+        ));
+    }
+
+    Ok(target)
+}
+
+fn is_broad_or_system_target(path: &str) -> bool {
+    matches!(
+        path,
+        "/" | "/System"
+            | "/Library"
+            | "/Applications"
+            | "/Users"
+            | "/tmp"
+            | "/private/tmp"
+            | "/opt"
+            | "/opt/homebrew"
+            | "/System/Volumes"
+            | "/System/Volumes/Data"
+            | "/System/Volumes/Data/System"
+            | "/System/Volumes/Data/Library"
+            | "/System/Volumes/Data/Users"
+            | "/System/Library/AssetsV2"
+            | "/System/Volumes/Data/System/Library/AssetsV2"
+    )
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
 fn parse_du_line(line: &str, logs: &mut Vec<ScanLog>) -> Option<UsageNode> {
     let mut parts = line.split_whitespace();
     let size_kib = parts.next()?;
@@ -665,5 +817,14 @@ mod tests {
     fn parses_restricted_flag() {
         let flags = parse_flags_from_ls("drwxr-xr-x@ 3 root wheel restricted 96 Jun 1 AssetsV2");
         assert_eq!(flags, vec!["restricted"]);
+    }
+
+    #[test]
+    fn broad_cleanup_targets_are_refused() {
+        assert!(is_broad_or_system_target("/"));
+        assert!(is_broad_or_system_target("/Users"));
+        assert!(is_broad_or_system_target("/System/Volumes/Data"));
+        assert!(is_broad_or_system_target("/opt/homebrew"));
+        assert!(!is_broad_or_system_target("/Users/me/Library/Caches/app"));
     }
 }

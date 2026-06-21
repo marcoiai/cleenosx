@@ -35,6 +35,24 @@ export interface ScanResult<T> {
   logs: ScanLog[];
 }
 
+export interface CleanupItem {
+  path: string;
+  risk: RiskLevel;
+  estimatedBytes?: number | null;
+  reason: string;
+}
+
+export interface CleanupPlan {
+  items: CleanupItem[];
+  confirmation?: string | null;
+}
+
+export interface CleanupOutcome {
+  dryRun: boolean;
+  deletedBytes: number;
+  message: string;
+}
+
 export interface StorageSummary {
   totalBytes?: number | null;
   usedBytes?: number | null;
@@ -84,4 +102,3 @@ export interface Overview {
   usageRoots: UsageNode[];
   findings: Finding[];
 }
-
