@@ -8,7 +8,7 @@ import {
   ShieldCheck,
   TerminalSquare,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FindingsList } from "./components/FindingsList";
 import { LoadingButton } from "./components/LoadingButton";
 import { LogsPanel } from "./components/LogsPanel";
@@ -52,19 +52,40 @@ const navItems: Array<{ id: View; label: string; icon: typeof Activity }> = [
 ];
 
 function App() {
-  const [activeView, setActiveView] = useState<View>("dashboard");
+  const [activeView, setActiveView] = useState<View>("volumes");
   const [overview, setOverview] = useState<Overview>(emptyOverview);
   const [volumes, setVolumes] = useState<VolumeInfo[]>([]);
   const [usage, setUsage] = useState<UsageNode[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [logs, setLogs] = useState<ScanLog[]>([]);
   const [loading, setLoading] = useState(false);
+  const [scanLabel, setScanLabel] = useState("Scanning");
+  const [scanStartedAt, setScanStartedAt] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [error, setError] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<StorageCategory | "all">("all");
+  const initialScanStarted = useRef(false);
 
   useEffect(() => {
-    void runOverview();
+    if (initialScanStarted.current) return;
+    initialScanStarted.current = true;
+    void runVolumes();
   }, []);
+
+  useEffect(() => {
+    if (!loading || scanStartedAt == null) {
+      setElapsedSeconds(0);
+      return;
+    }
+
+    const updateElapsed = () => {
+      setElapsedSeconds((Date.now() - scanStartedAt) / 1000);
+    };
+
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 250);
+    return () => window.clearInterval(timer);
+  }, [loading, scanStartedAt]);
 
   const allFindings = useMemo(() => {
     const byKey = new Map<string, Finding>();
@@ -86,7 +107,7 @@ function App() {
   }, [overview.usageRoots, usage]);
 
   async function runOverview() {
-    await withLoading(async () => {
+    await withLoading("Scanning overview", async () => {
       const result = await scanOverview();
       setOverview(result.data);
       setVolumes(result.data.volumes);
@@ -97,7 +118,7 @@ function App() {
   }
 
   async function runVolumes() {
-    await withLoading(async () => {
+    await withLoading("Scanning volumes and APFS hints", async () => {
       const result = await scanVolumes();
       setVolumes(result.data);
       pushLogs(result.logs);
@@ -105,7 +126,7 @@ function App() {
   }
 
   async function runDataUsage() {
-    await withLoading(async () => {
+    await withLoading("Scanning large storage blocks", async () => {
       const result = await scanDataUsage();
       setUsage(result.data);
       pushLogs(result.logs);
@@ -113,7 +134,7 @@ function App() {
   }
 
   async function runFindingsScan() {
-    await withLoading(async () => {
+    await withLoading("Scanning findings", async () => {
       const results = await Promise.all([
         scanAssetsV2(),
         scanDeveloperTools(),
@@ -126,7 +147,9 @@ function App() {
     });
   }
 
-  async function withLoading(work: () => Promise<void>) {
+  async function withLoading(label: string, work: () => Promise<void>) {
+    setScanLabel(label);
+    setScanStartedAt(Date.now());
     setLoading(true);
     setError("");
     try {
@@ -137,6 +160,7 @@ function App() {
       pushLogs([{ timestamp: Math.floor(Date.now() / 1000), level: "error", message }]);
     } finally {
       setLoading(false);
+      setScanStartedAt(null);
     }
   }
 
@@ -185,6 +209,7 @@ function App() {
           </header>
 
           <div className="p-6">
+            {loading && <ScanStatus label={scanLabel} elapsedSeconds={elapsedSeconds} logs={logs} />}
             {error && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</div>}
 
             {activeView === "dashboard" && (
@@ -278,6 +303,37 @@ function Dashboard({ overview }: { overview: Overview }) {
   );
 }
 
+function ScanStatus({
+  label,
+  elapsedSeconds,
+  logs,
+}: {
+  label: string;
+  elapsedSeconds: number;
+  logs: ScanLog[];
+}) {
+  const latestLog = logs[logs.length - 1];
+
+  return (
+    <section className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950 shadow-material">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="font-semibold">{label}</div>
+          <div className="mt-1 text-blue-800">
+            {latestLog?.message ?? "Starting real macOS scan..."}
+          </div>
+        </div>
+        <div className="rounded-full bg-white px-3 py-1 font-mono text-xs font-semibold text-blue-800 ring-1 ring-blue-200">
+          {elapsedSeconds.toFixed(1)}s
+        </div>
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-blue-100">
+        <div className="h-full w-1/3 animate-[progress-slide_1.2s_ease-in-out_infinite] rounded-full bg-blue-700" />
+      </div>
+    </section>
+  );
+}
+
 function FilterButton({ active, children, onClick }: { active: boolean; children: React.ReactNode; onClick: () => void }) {
   return (
     <button
@@ -318,4 +374,3 @@ function subtitleForView(view: View) {
 }
 
 export default App;
-
