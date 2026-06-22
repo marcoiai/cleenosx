@@ -18,7 +18,9 @@ fn get_default_scan_path() -> String {
 #[tauri::command]
 fn open_full_disk_access_settings() -> Result<(), String> {
     if app_store_build() {
-        return Err("Full Disk Access shortcuts are unavailable in the App Store build.".to_string());
+        return Err(
+            "Full Disk Access shortcuts are unavailable in the App Store build.".to_string(),
+        );
     }
 
     let status = std::process::Command::new("open")
@@ -180,7 +182,9 @@ async fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<Cleanup
 #[tauri::command]
 async fn execute_root_cleanup_continuation(continuation_id: String) -> ScanResult<CleanupOutcome> {
     if app_store_build() {
-        return app_store_cleanup_refused("Administrator cleanup is unavailable in the App Store build.");
+        return app_store_cleanup_refused(
+            "Administrator cleanup is unavailable in the App Store build.",
+        );
     }
 
     blocking(move || cleanerx_core::execute_root_cleanup_continuation(continuation_id)).await

@@ -2,7 +2,7 @@ import { AlertTriangle, ArrowUp, CheckSquare, ChevronRight, ClipboardCheck, Fold
 import { useEffect, useMemo, useRef, useState } from "react";
 import { categoryLabel, formatBytes } from "../format";
 import { cancelDeepScan, executeCleanupPlan, executeRootCleanupContinuation, prepareCleanupPlan, startDeepScan } from "../tauri";
-import type { CleanupOutcome, PreparedCleanupPlan, RiskLevel, ScanLog, UsageNode } from "../types";
+import type { ActionProfile, CleanupOutcome, PreparedCleanupItem, PreparedCleanupPlan, RiskLevel, ScanLog, UsageNode } from "../types";
 import { LoadingButton } from "./LoadingButton";
 import { RiskChip } from "./RiskChip";
 
@@ -492,6 +492,13 @@ export function ReviewPanel({
                       ))}
                     </div>
                   )}
+                  {preparedPlan.items.length > 0 && (
+                    <div className="mt-3 grid gap-2">
+                      {preparedPlan.items.map((item) => (
+                        <PreparedPlanRow key={item.id} item={item} />
+                      ))}
+                    </div>
+                  )}
                   <div className="mt-3 text-xs font-semibold text-ink-strong">
                     Type `{preparedPlan.finalConfirmationPhrase}` for final deletion.
                   </div>
@@ -732,6 +739,33 @@ function shortPath(path: string) {
   return basename(path);
 }
 
+function PreparedPlanRow({ item }: { item: PreparedCleanupItem }) {
+  const actionProfile = item.actionProfile;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate font-mono text-xs font-semibold text-ink-strong">{item.path}</div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+            <span>{categoryLabel(item.category)}</span>
+            <span>{formatBytes(item.estimatedBytes)}</span>
+            {actionProfile && <span>{actionProfile.deleteCapability.userFacingLevel}</span>}
+          </div>
+        </div>
+        <RiskChip risk={item.risk} />
+      </div>
+      <div className="mt-2 text-xs text-ink-body">{actionProfile?.deleteCapability.userFacingSummary ?? item.reason}</div>
+      {actionProfile && (
+        <div className="mt-1 text-xs text-ink-muted">
+          {formatActionScores(actionProfile)}
+          {actionProfile.recommendation.nextAction ? ` · ${actionProfile.recommendation.nextAction}` : ""}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function sortUsageNodes(nodes: UsageNode[]) {
   return [...nodes].sort(
     (left, right) =>
@@ -739,6 +773,10 @@ function sortUsageNodes(nodes: UsageNode[]) {
       right.sizeBytes - left.sizeBytes ||
       left.path.localeCompare(right.path),
   );
+}
+
+function formatActionScores(actionProfile: ActionProfile) {
+  return `Safety ${actionProfile.scores.safetyPercent}% · Reclaim ${actionProfile.scores.reclaimValuePercent}% · Automation ${actionProfile.scores.automationPercent}% · Confidence ${actionProfile.scores.confidencePercent}%`;
 }
 
 function hasWarnings(warnings: {

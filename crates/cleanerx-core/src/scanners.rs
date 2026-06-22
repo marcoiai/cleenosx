@@ -1,4 +1,4 @@
-use crate::classify::{classify_path, finding_for_path};
+use crate::classify::{action_profile_for_finding, classify_path, finding_for_path};
 use crate::cleanup::{cleanup_candidate_id, register_usage_nodes};
 use crate::command::{log_command_error, run, run_partial_with_timeout_and_cancel};
 use crate::models::{
@@ -310,12 +310,22 @@ pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
             recommended_action: "Inspect only. Use Apple tooling or Recovery for protected assets."
                 .to_string(),
             destructive: false,
+            action_profile: Some(action_profile_for_finding(
+                Some(root),
+                &StorageCategory::AssetsV2,
+                &RiskLevel::ReadOnlySystem,
+            )),
         });
 
         for target in ASSETS_V2_TARGETS {
             let path = format!("{root}/{target}");
             if Path::new(&path).exists() {
                 let size_bytes = disk_usage_bytes(&path, &mut logs);
+                let action_profile = action_profile_for_finding(
+                    Some(path.as_str()),
+                    &StorageCategory::AssetsV2,
+                    &RiskLevel::ReadOnlySystem,
+                );
                 findings.push(Finding {
                     title: format!("Known MobileAsset: {target}"),
                     path: Some(path),
@@ -327,6 +337,7 @@ pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
                     recommended_action: "Inspect only in CleanerX; do not remove in normal boot."
                         .to_string(),
                     destructive: false,
+                    action_profile: Some(action_profile),
                 });
             }
         }
@@ -453,6 +464,11 @@ pub fn list_snapshots() -> ScanResult<Vec<Finding>> {
                         "MVP: list only. Later: thin snapshots with explicit confirmation."
                             .to_string(),
                     destructive: false,
+                    action_profile: Some(action_profile_for_finding(
+                        None,
+                        &StorageCategory::Snapshots,
+                        &RiskLevel::ReviewRequired,
+                    )),
                 });
             }
 
@@ -1011,6 +1027,11 @@ fn summary_warnings(volumes: &[VolumeInfo]) -> Vec<Finding> {
                 reason: "Less than 10 GB free on the primary mounted volume.".to_string(),
                 recommended_action: "Review large blocks and snapshots immediately.".to_string(),
                 destructive: false,
+                action_profile: Some(action_profile_for_finding(
+                    None,
+                    &StorageCategory::MacOsApfs,
+                    &RiskLevel::Dangerous,
+                )),
             });
         } else if gib < 15.0 {
             findings.push(Finding {
@@ -1023,6 +1044,11 @@ fn summary_warnings(volumes: &[VolumeInfo]) -> Vec<Finding> {
                 recommended_action: "Review large blocks before macOS updates or builds."
                     .to_string(),
                 destructive: false,
+                action_profile: Some(action_profile_for_finding(
+                    None,
+                    &StorageCategory::MacOsApfs,
+                    &RiskLevel::ReviewRequired,
+                )),
             });
         }
     }

@@ -1,13 +1,14 @@
+use crate::classify::action_profile_for_cleanup_target;
 use crate::models::{
     CleanupExecution, CleanupItemOutcome, CleanupOutcome, CleanupSelection, CleanupSettings,
     PreparedCleanupItem, PreparedCleanupPlan, RiskLevel, ScanLog, ScanResult, UsageNode,
 };
 use std::collections::{HashMap, HashSet};
-use std::process::Command;
-use std::{fs, io};
 use std::path::{Component, Path};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs, io};
 
 static ALLOWLIST: OnceLock<Mutex<HashMap<String, PreparedCleanupItem>>> = OnceLock::new();
 static PREPARED_PLANS: OnceLock<Mutex<HashMap<String, PreparedCleanupPlan>>> = OnceLock::new();
@@ -209,7 +210,10 @@ pub fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<CleanupOu
                 } else {
                     error.to_string()
                 };
-                logs.push(ScanLog::error(format!("Failed to remove {}: {message}", item.path)));
+                logs.push(ScanLog::error(format!(
+                    "Failed to remove {}: {message}",
+                    item.path
+                )));
                 failed_items.push(CleanupItemOutcome {
                     path: item.path.clone(),
                     message,
@@ -230,7 +234,11 @@ pub fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<CleanupOu
         let root_items = plan
             .items
             .iter()
-            .filter(|item| failed_items.iter().any(|failed| failed.path == item.path && failed.needs_root))
+            .filter(|item| {
+                failed_items
+                    .iter()
+                    .any(|failed| failed.path == item.path && failed.needs_root)
+            })
             .cloned()
             .collect::<Vec<_>>();
         if root_items.is_empty() {
@@ -372,10 +380,16 @@ fn register_node(allowlist: &mut HashMap<String, PreparedCleanupItem>, node: &Us
             id: node.id.clone(),
             path: node.path.clone(),
             kind: node.kind.clone(),
+            category: node.category.clone(),
             risk: node.risk.clone(),
             estimated_bytes: node.size_bytes,
             reason: format!("{:?} cleanup target", node.category),
             action: cleanup_action_for_risk(&node.risk).to_string(),
+            action_profile: Some(action_profile_for_cleanup_target(
+                &node.path,
+                &node.category,
+                &node.risk,
+            )),
         },
     );
     for child in &node.children {
