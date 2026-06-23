@@ -149,6 +149,10 @@ pub fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<CleanupOu
         );
     }
 
+    if execution.elevated {
+        return execute_cleanup_plan_elevated(&plan, logs);
+    }
+
     let allowlist = ALLOWLIST
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -271,6 +275,94 @@ pub fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<CleanupOu
             root_continuation_id,
         },
         logs,
+    }
+}
+
+fn execute_cleanup_plan_elevated(
+    plan: &PreparedCleanupPlan,
+    mut logs: Vec<ScanLog>,
+) -> ScanResult<CleanupOutcome> {
+    logs.push(ScanLog::info(
+        "Elevated cleanup requested. Building admin shell script.",
+    ));
+
+    let mut shell_script = String::from("set -e\n");
+    let mut eligible_items = Vec::new();
+
+    for item in &plan.items {
+        if let Some(reason) = validate_candidate(item) {
+            logs.push(ScanLog::error(format!("Refused {}: {reason}", item.path)));
+            continue;
+        }
+        if is_broad_target(&item.path) || !is_normal_absolute_path(&item.path) {
+            logs.push(ScanLog::error(format!(
+                "Refused {}: target is not a normal exact cleanup path.",
+                item.path
+            )));
+            continue;
+        }
+        shell_script.push_str("rm -rf -- ");
+        shell_script.push_str(&shell_quote(&item.path));
+        shell_script.push('\n');
+        eligible_items.push(item.clone());
+    }
+
+    if eligible_items.is_empty() {
+        return cleanup_refused("No elevated cleanup targets are currently eligible.", logs);
+    }
+
+    let status = Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            "do shell script {} with administrator privileges",
+            applescript_quote(&shell_script)
+        ))
+        .status();
+
+    match status {
+        Ok(status) if status.success() => {
+            let deleted_bytes = eligible_items
+                .iter()
+                .map(|item| item.estimated_bytes)
+                .fold(0_u64, u64::saturating_add);
+            let removed_items = eligible_items
+                .iter()
+                .map(|item| CleanupItemOutcome {
+                    path: item.path.clone(),
+                    message: "removed with admin privileges".to_string(),
+                    needs_root: false,
+                })
+                .collect::<Vec<_>>();
+            logs.push(ScanLog::info(format!(
+                "Elevated cleanup removed {} item(s).",
+                removed_items.len()
+            )));
+            ScanResult {
+                data: CleanupOutcome {
+                    dry_run: false,
+                    deleted_bytes,
+                    message: format!(
+                        "Elevated cleanup finished. Removed {} item(s), failed 0 item(s).",
+                        removed_items.len()
+                    ),
+                    removed_items,
+                    failed_items: Vec::new(),
+                    needs_root: false,
+                    root_continuation_id: None,
+                },
+                logs,
+            }
+        }
+        Ok(status) => cleanup_refused(
+            &format!(
+                "Elevated cleanup did not complete. osascript exited with status {status}."
+            ),
+            logs,
+        ),
+        Err(error) => cleanup_refused(
+            &format!("Failed to request elevated cleanup through osascript: {error}"),
+            logs,
+        ),
     }
 }
 

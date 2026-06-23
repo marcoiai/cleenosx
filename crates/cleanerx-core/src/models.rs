@@ -249,6 +249,8 @@ pub struct PreparedCleanupPlan {
 pub struct CleanupExecution {
     pub plan_id: String,
     pub final_confirmation: String,
+    #[serde(default)]
+    pub elevated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

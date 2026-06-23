@@ -46,6 +46,7 @@ export function ReviewPanel({
   const [finalConfirmation, setFinalConfirmation] = useState("");
   const [cleanupStatus, setCleanupStatus] = useState("");
   const [rootContinuationId, setRootContinuationId] = useState("");
+  const [useElevated, setUseElevated] = useState(false);
   const scanInFlight = useRef(false);
 
   const sortedNodes = useMemo(() => sortUsageNodes(nodes), [nodes]);
@@ -147,6 +148,7 @@ export function ReviewPanel({
     setPreparedPlan(null);
     setFinalConfirmation("");
     setCleanupStatus("");
+    setUseElevated(false);
     setConfirmOpen(true);
   }
 
@@ -181,6 +183,7 @@ export function ReviewPanel({
       const result = await executeCleanupPlan({
         planId: preparedPlan.planId,
         finalConfirmation,
+        elevated: useElevated || undefined,
       });
       onLogs(result.logs);
       setMessage(formatCleanupOutcome(result.data));
@@ -507,6 +510,18 @@ export function ReviewPanel({
                     value={finalConfirmation}
                     onChange={(event) => setFinalConfirmation(event.target.value)}
                   />
+                  {!appStoreMode && (
+                    <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs font-semibold text-ink-body select-none">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-slate-900"
+                        checked={useElevated}
+                        onChange={(event) => setUseElevated(event.target.checked)}
+                      />
+                      Request administrator privileges
+                      <span className="font-normal text-ink-muted">(macOS will ask for your password)</span>
+                    </label>
+                  )}
                 </div>
               )}
             </div>

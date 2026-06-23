@@ -131,6 +131,7 @@ export interface PreparedCleanupPlan {
 export interface CleanupExecution {
   planId: string;
   finalConfirmation: string;
+  elevated?: boolean;
 }
 
 export interface CleanupSettings {
