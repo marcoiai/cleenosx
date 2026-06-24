@@ -570,7 +570,7 @@ function subtitleForView(view: View) {
     dashboard: "Storage summary, APFS roles, warnings, and scan status.",
     volumes: "Mounted and unmounted volume hints from macOS tools.",
     scanner: "Drill down, select exact files or directories, prepare a plan, then confirm deletion.",
-    findings: "Assets, snapshots, developer tools, containers, and risk labels.",
+    findings: "Assets, snapshots, Rust targets (`target/`) and related build caches, developer tools, containers, plus risk labels.",
     recovery: "Generated companion script for Recovery workflows.",
     settings: "Reserved configuration surface.",
   };
