@@ -20,7 +20,7 @@ The first MVP is read-only by default and includes:
 - Basic large-block classification.
 - AssetsV2 detection.
 - `restricted` flag detection through filesystem metadata.
-- Recovery script generation.
+- Recovery script generation and execution throught the UI.
 - Guided CLI with menus, color, emoji labels, spinners, elapsed-time feedback, logs, and safe-mode defaults.
 - No automatic destructive cleanup.
 

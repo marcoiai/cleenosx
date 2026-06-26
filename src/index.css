@@ -1,0 +1,250 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #172033;
+  background: #f7f8fb;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+@keyframes boot-meter {
+  from {
+    width: 34%;
+  }
+  to {
+    width: 72%;
+  }
+}
+
+@keyframes boot-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes indeterminate-progress {
+  0% {
+    transform: translateX(-70%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.indeterminate-progress {
+  width: 38%;
+  animation: indeterminate-progress 1.15s ease-in-out infinite;
+}
+
+html.black,
+html.black body,
+html.black #root {
+  color: #d8deea;
+  background: #05070c;
+}
+
+html.black .bg-surface-base {
+  background-color: #05070c;
+}
+
+html.black .bg-white {
+  background-color: #10141f;
+}
+
+html.black .bg-white\/70 {
+  background-color: rgb(16 20 31 / 0.78);
+}
+
+html.black .bg-slate-50 {
+  background-color: #151b28;
+}
+
+html.black .bg-slate-100 {
+  background-color: #1d2433;
+}
+
+html.black .bg-slate-200 {
+  background-color: #2a3345;
+}
+
+html.black .bg-blue-50 {
+  background-color: #0b1f3a;
+}
+
+html.black .bg-blue-700 {
+  background-color: #2563eb;
+}
+
+html.black .hover\:bg-blue-50:hover {
+  background-color: #102a4d;
+}
+
+html.black .hover\:bg-blue-100:hover {
+  background-color: #17375f;
+}
+
+html.black .hover\:bg-blue-800:hover {
+  background-color: #1d4ed8;
+}
+
+html.black .hover\:bg-slate-50:hover,
+html.black .hover\:bg-slate-100:hover,
+html.black .hover\:bg-slate-200:hover {
+  background-color: #222a3a;
+}
+
+html.black .bg-emerald-50 {
+  background-color: #08251b;
+}
+
+html.black .hover\:bg-emerald-100:hover {
+  background-color: #103627;
+}
+
+html.black .bg-amber-50 {
+  background-color: #2d1d08;
+}
+
+html.black .bg-amber-100 {
+  background-color: #3d280b;
+}
+
+html.black .bg-red-50 {
+  background-color: #2b0b0b;
+}
+
+html.black .border-slate-100,
+html.black .border-slate-200,
+html.black .border-slate-300 {
+  border-color: #2a3345;
+}
+
+html.black .border-blue-200 {
+  border-color: #1f4f8a;
+}
+
+html.black .border-emerald-200 {
+  border-color: #146c4a;
+}
+
+html.black .border-amber-200 {
+  border-color: #8a5a12;
+}
+
+html.black .border-red-200 {
+  border-color: #8a2424;
+}
+
+html.black .ring-slate-200,
+html.black .ring-slate-300 {
+  --tw-ring-color: #2f3a4f;
+}
+
+html.black .ring-blue-200 {
+  --tw-ring-color: #1f4f8a;
+}
+
+html.black .ring-emerald-200 {
+  --tw-ring-color: #146c4a;
+}
+
+html.black .ring-amber-200 {
+  --tw-ring-color: #8a5a12;
+}
+
+html.black .text-ink-strong {
+  color: #f4f7fb;
+}
+
+html.black .text-ink-body {
+  color: #d8deea;
+}
+
+html.black .text-ink-muted {
+  color: #94a3b8;
+}
+
+html.black .text-blue-700,
+html.black .text-blue-800 {
+  color: #8bb8ff;
+}
+
+html.black .text-emerald-800,
+html.black .text-signal-safe {
+  color: #7be1b3;
+}
+
+html.black .text-amber-700,
+html.black .text-amber-800,
+html.black .text-amber-900,
+html.black .text-amber-950,
+html.black .text-signal-attention {
+  color: #f5c46b;
+}
+
+html.black .text-orange-700,
+html.black .text-signal-review {
+  color: #ff9f73;
+}
+
+html.black .text-red-700,
+html.black .text-red-800,
+html.black .text-signal-danger {
+  color: #ff9a9a;
+}
+
+html.black .text-signal-system {
+  color: #b3bdcc;
+}
+
+html.black input,
+html.black textarea,
+html.black select {
+  color: #f4f7fb;
+  background-color: #0b0f18;
+  border-color: #2a3345;
+}
+
+html.black input::placeholder,
+html.black textarea::placeholder {
+  color: #64748b;
+}
+
+html.black .shadow-material {
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.35), 0 10px 30px rgb(0 0 0 / 0.28);
+}

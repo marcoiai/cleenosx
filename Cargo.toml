@@ -1,0 +1,13 @@
+[workspace]
+members = [
+  "crates/cleanerx-core",
+  "crates/cleanerx-cli",
+  "src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
