@@ -1,13 +1,14 @@
+use crate::classify::action_profile_for_cleanup_target;
 use crate::models::{
     CleanupExecution, CleanupItemOutcome, CleanupOutcome, CleanupSelection, CleanupSettings,
     PreparedCleanupItem, PreparedCleanupPlan, RiskLevel, ScanLog, ScanResult, UsageNode,
 };
 use std::collections::{HashMap, HashSet};
-use std::process::Command;
-use std::{fs, io};
 use std::path::{Component, Path};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs, io};
 
 static ALLOWLIST: OnceLock<Mutex<HashMap<String, PreparedCleanupItem>>> = OnceLock::new();
 static PREPARED_PLANS: OnceLock<Mutex<HashMap<String, PreparedCleanupPlan>>> = OnceLock::new();
@@ -148,6 +149,16 @@ pub fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<CleanupOu
         );
     }
 
+    if execution.elevated {
+        let result = execute_cleanup_plan_elevated(&plan, logs);
+        PREPARED_PLANS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .expect("cleanup prepared plans poisoned")
+            .remove(&execution.plan_id);
+        return result;
+    }
+
     let allowlist = ALLOWLIST
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -209,7 +220,10 @@ pub fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<CleanupOu
                 } else {
                     error.to_string()
                 };
-                logs.push(ScanLog::error(format!("Failed to remove {}: {message}", item.path)));
+                logs.push(ScanLog::error(format!(
+                    "Failed to remove {}: {message}",
+                    item.path
+                )));
                 failed_items.push(CleanupItemOutcome {
                     path: item.path.clone(),
                     message,
@@ -230,7 +244,11 @@ pub fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<CleanupOu
         let root_items = plan
             .items
             .iter()
-            .filter(|item| failed_items.iter().any(|failed| failed.path == item.path && failed.needs_root))
+            .filter(|item| {
+                failed_items
+                    .iter()
+                    .any(|failed| failed.path == item.path && failed.needs_root)
+            })
             .cloned()
             .collect::<Vec<_>>();
         if root_items.is_empty() {
@@ -263,6 +281,94 @@ pub fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<CleanupOu
             root_continuation_id,
         },
         logs,
+    }
+}
+
+fn execute_cleanup_plan_elevated(
+    plan: &PreparedCleanupPlan,
+    mut logs: Vec<ScanLog>,
+) -> ScanResult<CleanupOutcome> {
+    logs.push(ScanLog::info(
+        "Elevated cleanup requested. Building admin shell script.",
+    ));
+
+    let mut shell_script = String::from("set -e\n");
+    let mut eligible_items = Vec::new();
+
+    for item in &plan.items {
+        if let Some(reason) = validate_candidate(item) {
+            logs.push(ScanLog::error(format!("Refused {}: {reason}", item.path)));
+            continue;
+        }
+        if is_broad_target(&item.path) || !is_normal_absolute_path(&item.path) {
+            logs.push(ScanLog::error(format!(
+                "Refused {}: target is not a normal exact cleanup path.",
+                item.path
+            )));
+            continue;
+        }
+        shell_script.push_str("rm -rf -- ");
+        shell_script.push_str(&shell_quote(&item.path));
+        shell_script.push('\n');
+        eligible_items.push(item.clone());
+    }
+
+    if eligible_items.is_empty() {
+        return cleanup_refused("No elevated cleanup targets are currently eligible.", logs);
+    }
+
+    let status = Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            "do shell script {} with administrator privileges",
+            applescript_quote(&shell_script)
+        ))
+        .status();
+
+    match status {
+        Ok(status) if status.success() => {
+            let deleted_bytes = eligible_items
+                .iter()
+                .map(|item| item.estimated_bytes)
+                .fold(0_u64, u64::saturating_add);
+            let removed_items = eligible_items
+                .iter()
+                .map(|item| CleanupItemOutcome {
+                    path: item.path.clone(),
+                    message: "removed with admin privileges".to_string(),
+                    needs_root: false,
+                })
+                .collect::<Vec<_>>();
+            logs.push(ScanLog::info(format!(
+                "Elevated cleanup removed {} item(s).",
+                removed_items.len()
+            )));
+            ScanResult {
+                data: CleanupOutcome {
+                    dry_run: false,
+                    deleted_bytes,
+                    message: format!(
+                        "Elevated cleanup finished. Removed {} item(s), failed 0 item(s).",
+                        removed_items.len()
+                    ),
+                    removed_items,
+                    failed_items: Vec::new(),
+                    needs_root: false,
+                    root_continuation_id: None,
+                },
+                logs,
+            }
+        }
+        Ok(status) => cleanup_refused(
+            &format!(
+                "Elevated cleanup did not complete. osascript exited with status {status}."
+            ),
+            logs,
+        ),
+        Err(error) => cleanup_refused(
+            &format!("Failed to request elevated cleanup through osascript: {error}"),
+            logs,
+        ),
     }
 }
 
@@ -372,10 +478,16 @@ fn register_node(allowlist: &mut HashMap<String, PreparedCleanupItem>, node: &Us
             id: node.id.clone(),
             path: node.path.clone(),
             kind: node.kind.clone(),
+            category: node.category.clone(),
             risk: node.risk.clone(),
             estimated_bytes: node.size_bytes,
             reason: format!("{:?} cleanup target", node.category),
             action: cleanup_action_for_risk(&node.risk).to_string(),
+            action_profile: Some(action_profile_for_cleanup_target(
+                &node.path,
+                &node.category,
+                &node.risk,
+            )),
         },
     );
     for child in &node.children {

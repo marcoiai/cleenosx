@@ -38,6 +38,76 @@ pub enum UsageKind {
     Folder,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionStatus {
+    Candidate,
+    Approved,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ActionType {
+    MeasureOnly,
+    ListOnly,
+    DeleteFiles,
+    PurgeCache,
+    OpenFolder,
+    Advisory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionScores {
+    pub safety_percent: u8,
+    pub reclaim_value_percent: u8,
+    pub automation_percent: u8,
+    pub confidence_percent: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteCapability {
+    pub can_delete: bool,
+    pub user_facing_level: String,
+    pub user_facing_summary: String,
+    pub technical_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionUi {
+    pub badge: String,
+    pub severity_percent: u8,
+    pub primary_action: String,
+    pub secondary_action: Option<String>,
+    pub explain_like_user: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionRecommendation {
+    pub include_in_app: bool,
+    pub include_as_cleanup: bool,
+    pub include_as_diagnostic: bool,
+    pub next_action: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionProfile {
+    pub status: ActionStatus,
+    pub action_type: ActionType,
+    pub deletes_files: bool,
+    pub command: Option<String>,
+    pub requires_sudo: bool,
+    pub scores: ActionScores,
+    pub delete_capability: DeleteCapability,
+    pub ui: ActionUi,
+    pub recommendation: ActionRecommendation,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VolumeInfo {
@@ -101,6 +171,8 @@ pub struct Finding {
     pub reason: String,
     pub recommended_action: String,
     pub destructive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_profile: Option<ActionProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,10 +225,13 @@ pub struct PreparedCleanupItem {
     pub id: String,
     pub path: String,
     pub kind: UsageKind,
+    pub category: StorageCategory,
     pub risk: RiskLevel,
     pub estimated_bytes: u64,
     pub reason: String,
     pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_profile: Option<ActionProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +249,8 @@ pub struct PreparedCleanupPlan {
 pub struct CleanupExecution {
     pub plan_id: String,
     pub final_confirmation: String,
+    #[serde(default)]
+    pub elevated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

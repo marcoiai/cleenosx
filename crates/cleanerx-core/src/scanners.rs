@@ -1,4 +1,4 @@
-use crate::classify::{classify_path, finding_for_path};
+use crate::classify::{action_profile_for_finding, classify_path, finding_for_path};
 use crate::cleanup::{cleanup_candidate_id, register_usage_nodes};
 use crate::command::{log_command_error, run, run_partial_with_timeout_and_cancel};
 use crate::models::{
@@ -26,6 +26,22 @@ const ASSETS_V2_TARGETS: &[&str] = &[
     "com_apple_MobileAsset_LinguisticData",
     "com_apple_MobileAsset_UAF_Siri_Understanding",
 ];
+const RUST_TARGET_SCAN_ROOT_HINTS: &[&str] = &[
+    "code",
+    "Projects",
+    "src",
+    "project",
+    "projects",
+    "workspace",
+    "work",
+    "repos",
+    "repo",
+    "repository",
+    "repositories",
+    "Development",
+    "Documents",
+];
+const RUST_TARGET_SCAN_MAX_DEPTH: usize = 8;
 const DEEP_SCAN_TIMEOUT: Duration = Duration::from_secs(120);
 static DEEP_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 static DEEP_SCAN_CANCEL: AtomicBool = AtomicBool::new(false);
@@ -310,12 +326,22 @@ pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
             recommended_action: "Inspect only. Use Apple tooling or Recovery for protected assets."
                 .to_string(),
             destructive: false,
+            action_profile: Some(action_profile_for_finding(
+                Some(root),
+                &StorageCategory::AssetsV2,
+                &RiskLevel::ReadOnlySystem,
+            )),
         });
 
         for target in ASSETS_V2_TARGETS {
             let path = format!("{root}/{target}");
             if Path::new(&path).exists() {
                 let size_bytes = disk_usage_bytes(&path, &mut logs);
+                let action_profile = action_profile_for_finding(
+                    Some(path.as_str()),
+                    &StorageCategory::AssetsV2,
+                    &RiskLevel::ReadOnlySystem,
+                );
                 findings.push(Finding {
                     title: format!("Known MobileAsset: {target}"),
                     path: Some(path),
@@ -327,6 +353,7 @@ pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
                     recommended_action: "Inspect only in CleanerX; do not remove in normal boot."
                         .to_string(),
                     destructive: false,
+                    action_profile: Some(action_profile),
                 });
             }
         }
@@ -381,7 +408,11 @@ pub fn scan_rust_artifacts() -> ScanResult<Vec<Finding>> {
     let mut logs = vec![ScanLog::info("Scanning Rust toolchain/cache locations.")];
     let home = env::var("HOME").unwrap_or_default();
     let mut findings = Vec::new();
-    let paths = [format!("{home}/.rustup"), format!("{home}/.cargo")];
+    let paths = [
+        format!("{home}/.rustup"),
+        format!("{home}/.cargo"),
+    ];
+    let mut target_roots = discover_rust_target_directories(&home);
 
     for path in paths {
         if Path::new(&path).exists() {
@@ -393,12 +424,119 @@ pub fn scan_rust_artifacts() -> ScanResult<Vec<Finding>> {
         }
     }
 
+    for path in target_roots.drain(..) {
+        findings.push(finding_for_path(
+            "Rust target directory",
+            &path,
+            disk_usage_bytes(&path, &mut logs),
+        ));
+    }
+
     sort_findings_by_size(&mut findings);
 
     ScanResult {
         data: findings,
         logs,
     }
+}
+
+fn discover_rust_target_directories(home: &str) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    for hint in RUST_TARGET_SCAN_ROOT_HINTS {
+        let base = format!("{home}/{hint}");
+        if !Path::new(&base).exists() {
+            continue;
+        }
+        gather_target_directories(Path::new(&base), 0, RUST_TARGET_SCAN_MAX_DEPTH, &mut findings);
+    }
+
+    findings.sort();
+    findings.dedup();
+    findings
+}
+
+fn gather_target_directories(
+    root: &std::path::Path,
+    depth: usize,
+    max_depth: usize,
+    findings: &mut Vec<String>,
+) {
+    if depth >= max_depth {
+        return;
+    }
+
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+
+        if !file_type.is_dir() || file_type.is_symlink() {
+            continue;
+        }
+
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "target" {
+            if has_cargo_marker(&entry.path()) {
+                findings.push(entry.path().to_string_lossy().to_string());
+            }
+            continue;
+        }
+
+        if is_noisy_directory(&name) {
+            continue;
+        }
+
+        gather_target_directories(
+            &entry.path(),
+            depth + 1,
+            max_depth,
+            findings,
+        );
+    }
+}
+
+fn has_cargo_marker(target_dir: &std::path::Path) -> bool {
+    let mut current = target_dir.parent();
+    let mut depth = 0usize;
+    while let Some(path) = current {
+        if path.join("Cargo.toml").is_file() {
+            return true;
+        }
+        if path.join("Cargo.lock").is_file() {
+            return true;
+        }
+        depth += 1;
+        if depth >= 3 {
+            break;
+        }
+        current = path.parent();
+    }
+    false
+}
+
+fn is_noisy_directory(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".cache"
+            | "node_modules"
+            | ".venv"
+            | "target"
+            | "vendor"
+            | "dist"
+            | "build"
+            | "Pods"
+            | ".gradle"
+            | "Library"
+            | ".idea"
+    )
 }
 
 pub fn scan_containers() -> ScanResult<Vec<Finding>> {
@@ -453,6 +591,11 @@ pub fn list_snapshots() -> ScanResult<Vec<Finding>> {
                         "MVP: list only. Later: thin snapshots with explicit confirmation."
                             .to_string(),
                     destructive: false,
+                    action_profile: Some(action_profile_for_finding(
+                        None,
+                        &StorageCategory::Snapshots,
+                        &RiskLevel::ReviewRequired,
+                    )),
                 });
             }
 
@@ -1011,6 +1154,11 @@ fn summary_warnings(volumes: &[VolumeInfo]) -> Vec<Finding> {
                 reason: "Less than 10 GB free on the primary mounted volume.".to_string(),
                 recommended_action: "Review large blocks and snapshots immediately.".to_string(),
                 destructive: false,
+                action_profile: Some(action_profile_for_finding(
+                    None,
+                    &StorageCategory::MacOsApfs,
+                    &RiskLevel::Dangerous,
+                )),
             });
         } else if gib < 15.0 {
             findings.push(Finding {
@@ -1023,6 +1171,11 @@ fn summary_warnings(volumes: &[VolumeInfo]) -> Vec<Finding> {
                 recommended_action: "Review large blocks before macOS updates or builds."
                     .to_string(),
                 destructive: false,
+                action_profile: Some(action_profile_for_finding(
+                    None,
+                    &StorageCategory::MacOsApfs,
+                    &RiskLevel::ReviewRequired,
+                )),
             });
         }
     }

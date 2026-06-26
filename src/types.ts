@@ -26,6 +26,57 @@ export type UsageKind = "file" | "folder";
 
 export type LogLevel = "info" | "warning" | "error";
 
+export type ActionStatus = "candidate" | "approved" | "rejected";
+
+export type ActionType =
+  | "measureOnly"
+  | "listOnly"
+  | "deleteFiles"
+  | "purgeCache"
+  | "openFolder"
+  | "advisory";
+
+export interface ActionScores {
+  safetyPercent: number;
+  reclaimValuePercent: number;
+  automationPercent: number;
+  confidencePercent: number;
+}
+
+export interface DeleteCapability {
+  canDelete: boolean;
+  userFacingLevel: string;
+  userFacingSummary: string;
+  technicalReason: string;
+}
+
+export interface ActionUi {
+  badge: string;
+  severityPercent: number;
+  primaryAction: string;
+  secondaryAction?: string | null;
+  explainLikeUser: string;
+}
+
+export interface ActionRecommendation {
+  includeInApp: boolean;
+  includeAsCleanup: boolean;
+  includeAsDiagnostic: boolean;
+  nextAction?: string | null;
+}
+
+export interface ActionProfile {
+  status: ActionStatus;
+  actionType: ActionType;
+  deletesFiles: boolean;
+  command?: string | null;
+  requiresSudo: boolean;
+  scores: ActionScores;
+  deleteCapability: DeleteCapability;
+  ui: ActionUi;
+  recommendation: ActionRecommendation;
+}
+
 export interface ScanLog {
   timestamp: number;
   level: LogLevel;
@@ -61,10 +112,12 @@ export interface PreparedCleanupItem {
   id: string;
   path: string;
   kind: UsageKind;
+  category: StorageCategory;
   risk: RiskLevel;
   estimatedBytes: number;
   reason: string;
   action: string;
+  actionProfile?: ActionProfile | null;
 }
 
 export interface PreparedCleanupPlan {
@@ -78,6 +131,7 @@ export interface PreparedCleanupPlan {
 export interface CleanupExecution {
   planId: string;
   finalConfirmation: string;
+  elevated?: boolean;
 }
 
 export interface CleanupSettings {
@@ -144,6 +198,7 @@ export interface Finding {
   reason: string;
   recommendedAction: string;
   destructive: boolean;
+  actionProfile?: ActionProfile | null;
 }
 
 export interface Overview {
