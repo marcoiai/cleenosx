@@ -1,6 +1,7 @@
 import { FolderOpen } from "lucide-react";
 import { useMemo } from "react";
 import { categoryLabel, formatBytes } from "../format";
+import { useI18n } from "../i18n";
 import type { ActionProfile, Finding } from "../types";
 import { RiskChip } from "./RiskChip";
 
@@ -11,6 +12,7 @@ interface FindingsListProps {
 }
 
 export function FindingsList({ findings, onScanPath, disabled = false }: FindingsListProps) {
+  const { t } = useI18n();
   const sortedFindings = useMemo(
     () =>
       [...findings].sort(
@@ -24,11 +26,11 @@ export function FindingsList({ findings, onScanPath, disabled = false }: Finding
   return (
     <section className="rounded-lg border border-slate-200 bg-white shadow-material">
       <div className="border-b border-slate-200 px-4 py-3">
-        <h2 className="text-sm font-semibold text-ink-strong">Findings</h2>
+        <h2 className="text-sm font-semibold text-ink-strong">{t("findings.title")}</h2>
       </div>
       <div className="grid gap-3 p-4">
         {sortedFindings.length === 0 ? (
-          <div className="py-6 text-center text-sm text-ink-muted">No findings yet.</div>
+          <div className="py-6 text-center text-sm text-ink-muted">{t("findings.empty")}</div>
         ) : (
           sortedFindings.map((finding, index) => (
             <FindingCard
@@ -53,6 +55,7 @@ function FindingCard({
   onScanPath?: (path: string) => void;
   disabled: boolean;
 }) {
+  const { t } = useI18n();
   const actionProfile = finding.actionProfile;
 
   return (
@@ -92,10 +95,10 @@ function FindingCard({
             className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg bg-slate-100 px-3 text-xs font-semibold text-ink-body hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
             disabled={!onScanPath || disabled}
             onClick={() => onScanPath?.(finding.path!)}
-            title="Scan this path"
+            title={t("findings.scanTitle")}
           >
             <FolderOpen size={14} />
-            Scan
+            {t("common.scan")}
           </button>
         )}
       </div>

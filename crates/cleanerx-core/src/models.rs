@@ -221,6 +221,15 @@ pub struct CleanupSelection {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AdminSessionStatus {
+    pub unlocked: bool,
+    pub available: bool,
+    pub last_unlocked_at_ms: Option<u64>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PreparedCleanupItem {
     pub id: String,
     pub path: String,

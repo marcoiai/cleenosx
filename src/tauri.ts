@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AdminSessionStatus,
   CleanupOutcome,
   CleanupExecution,
   CleanupSelection,
@@ -27,6 +28,18 @@ export async function getDefaultScanPath() {
 
 export async function openFullDiskAccessSettings() {
   return invoke<void>("open_full_disk_access_settings");
+}
+
+export async function getAdminSessionStatus() {
+  return invoke<AdminSessionStatus>("get_admin_session_status");
+}
+
+export async function unlockAdminSession() {
+  return invoke<AdminSessionStatus>("unlock_admin_session");
+}
+
+export async function lockAdminSession() {
+  return invoke<AdminSessionStatus>("lock_admin_session");
 }
 
 export async function scanVolumes() {

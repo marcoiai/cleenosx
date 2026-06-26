@@ -1,6 +1,7 @@
 use cleanerx_core::{
-    CleanupExecution, CleanupOutcome, CleanupSelection, CleanupSettings, DeepScanResult, Finding,
-    Overview, PreparedCleanupPlan, ScanLog, ScanResult, UsageNode, VolumeInfo,
+    AdminSessionStatus, CleanupExecution, CleanupOutcome, CleanupSelection, CleanupSettings,
+    DeepScanResult, Finding, Overview, PreparedCleanupPlan, ScanLog, ScanResult, UsageNode,
+    VolumeInfo,
 };
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -39,6 +40,43 @@ fn open_full_disk_access_settings() -> Result<(), String> {
                 .unwrap_or_else(|| "signal".to_string())
         ))
     }
+}
+
+#[tauri::command]
+fn get_admin_session_status() -> AdminSessionStatus {
+    if app_store_build() {
+        return AdminSessionStatus {
+            unlocked: false,
+            available: false,
+            last_unlocked_at_ms: None,
+            message: "Admin Mode is unavailable in the App Store build.".to_string(),
+        };
+    }
+
+    cleanerx_core::admin_session_status()
+}
+
+#[tauri::command]
+fn unlock_admin_session() -> Result<AdminSessionStatus, String> {
+    if app_store_build() {
+        return Err("Admin Mode is unavailable in the App Store build.".to_string());
+    }
+
+    cleanerx_core::unlock_admin_session()
+}
+
+#[tauri::command]
+fn lock_admin_session() -> AdminSessionStatus {
+    if app_store_build() {
+        return AdminSessionStatus {
+            unlocked: false,
+            available: false,
+            last_unlocked_at_ms: None,
+            message: "Admin Mode is unavailable in the App Store build.".to_string(),
+        };
+    }
+
+    cleanerx_core::lock_admin_session()
 }
 
 #[tauri::command]
@@ -235,6 +273,9 @@ pub fn run() {
             get_storage_overview,
             get_default_scan_path,
             open_full_disk_access_settings,
+            get_admin_session_status,
+            unlock_admin_session,
+            lock_admin_session,
             scan_overview,
             scan_volumes,
             scan_data_usage,

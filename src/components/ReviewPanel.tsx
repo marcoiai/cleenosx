@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowUp, CheckSquare, ChevronRight, ClipboardCheck, FolderOpen, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { categoryLabel, formatBytes } from "../format";
+import { formatScanWarningSummary, hasScanWarnings } from "../scanWarnings";
 import { cancelDeepScan, executeCleanupPlan, executeRootCleanupContinuation, prepareCleanupPlan, startDeepScan } from "../tauri";
 import type { ActionProfile, CleanupOutcome, PreparedCleanupItem, PreparedCleanupPlan, RiskLevel, ScanLog, UsageNode } from "../types";
 import { LoadingButton } from "./LoadingButton";
@@ -20,6 +21,7 @@ interface ReviewPanelProps {
   initialPath?: string;
   allowProjectRootCleanup?: boolean;
   appStoreMode?: boolean;
+  adminSessionUnlocked?: boolean;
   onLogs: (logs: ScanLog[]) => void;
   onRescanPath?: (path: string) => void;
 }
@@ -31,6 +33,7 @@ export function ReviewPanel({
   initialPath = defaultPath,
   allowProjectRootCleanup = false,
   appStoreMode = false,
+  adminSessionUnlocked = false,
   onLogs,
   onRescanPath,
 }: ReviewPanelProps) {
@@ -110,8 +113,8 @@ export function ReviewPanel({
       onLogs(result.logs);
       if (result.data.canceled) {
         setMessage("Scan canceled.");
-      } else if (result.data.partial && hasWarnings(result.data.warningsSummary)) {
-        setMessage(formatWarningSummary(result.data.warningsSummary));
+      } else if (result.data.partial && hasScanWarnings(result.data.warningsSummary)) {
+        setMessage(formatScanWarningSummary(result.data.warningsSummary));
       } else {
         setMessage("");
       }
@@ -148,7 +151,7 @@ export function ReviewPanel({
     setPreparedPlan(null);
     setFinalConfirmation("");
     setCleanupStatus("");
-    setUseElevated(false);
+    setUseElevated(adminSessionUnlocked);
     setConfirmOpen(true);
   }
 
@@ -518,8 +521,12 @@ export function ReviewPanel({
                         checked={useElevated}
                         onChange={(event) => setUseElevated(event.target.checked)}
                       />
-                      Request administrator privileges
-                      <span className="font-normal text-ink-muted">(macOS will ask for your password)</span>
+                      {adminSessionUnlocked ? "Use Admin Mode for this cleanup" : "Request administrator privileges"}
+                      <span className="font-normal text-ink-muted">
+                        {adminSessionUnlocked
+                          ? "(CleanerX will prefer admin cleanup; macOS may still re-prompt later)"
+                          : "(macOS will ask for your password)"}
+                      </span>
                     </label>
                   )}
                 </div>
@@ -792,47 +799,6 @@ function sortUsageNodes(nodes: UsageNode[]) {
 
 function formatActionScores(actionProfile: ActionProfile) {
   return `Safety ${actionProfile.scores.safetyPercent}% · Reclaim ${actionProfile.scores.reclaimValuePercent}% · Automation ${actionProfile.scores.automationPercent}% · Confidence ${actionProfile.scores.confidencePercent}%`;
-}
-
-function hasWarnings(warnings: {
-  permissionDenied: number;
-  operationNotPermitted: number;
-  vanishedPaths: number;
-  unexpectedErrors: string[];
-  samples: string[];
-}) {
-  return (
-    warnings.permissionDenied > 0 ||
-    warnings.operationNotPermitted > 0 ||
-    warnings.vanishedPaths > 0 ||
-    warnings.unexpectedErrors.length > 0 ||
-    warnings.samples.length > 0
-  );
-}
-
-function formatWarningSummary(warnings: {
-  permissionDenied: number;
-  operationNotPermitted: number;
-  vanishedPaths: number;
-  unexpectedErrors: string[];
-  samples: string[];
-}) {
-  if (warnings.unexpectedErrors.length === 0 && warnings.samples.length > 0) {
-    const protectedSkips = warnings.permissionDenied + warnings.operationNotPermitted;
-    if (protectedSkips > 0) {
-      const vanished = warnings.vanishedPaths > 0 ? ` ${warnings.vanishedPaths} vanished path(s) also skipped.` : "";
-      return `Skipped ${protectedSkips} macOS-protected path(s); partial results are usable.${vanished}`;
-    }
-  }
-
-  const parts = [];
-  if (warnings.permissionDenied > 0) parts.push(`${warnings.permissionDenied} permission denied`);
-  if (warnings.operationNotPermitted > 0) parts.push(`${warnings.operationNotPermitted} operation not permitted`);
-  if (warnings.vanishedPaths > 0) parts.push(`${warnings.vanishedPaths} vanished`);
-  if (warnings.unexpectedErrors.length > 0) parts.push(`${warnings.unexpectedErrors.length} unexpected`);
-  const sample = warnings.samples[0] ? ` Sample: ${warnings.samples[0]}` : "";
-  const summary = parts.length > 0 ? parts.join(" · ") : "Partial scan";
-  return `${summary}.${sample}`;
 }
 
 function formatCleanupOutcome(outcome: CleanupOutcome) {

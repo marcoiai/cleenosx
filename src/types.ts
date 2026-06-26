@@ -138,6 +138,13 @@ export interface CleanupSettings {
   allowProjectRootCleanup: boolean;
 }
 
+export interface AdminSessionStatus {
+  unlocked: boolean;
+  available: boolean;
+  lastUnlockedAtMs?: number | null;
+  message: string;
+}
+
 export interface StorageSummary {
   totalBytes?: number | null;
   usedBytes?: number | null;

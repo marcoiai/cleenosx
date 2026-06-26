@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod classify;
 pub mod cleanup;
 pub mod command;
@@ -6,6 +7,18 @@ pub mod recovery;
 pub mod scanners;
 
 pub use models::*;
+
+pub fn admin_session_status() -> AdminSessionStatus {
+    admin::admin_session_status()
+}
+
+pub fn unlock_admin_session() -> Result<AdminSessionStatus, String> {
+    admin::unlock_admin_session()
+}
+
+pub fn lock_admin_session() -> AdminSessionStatus {
+    admin::lock_admin_session()
+}
 
 pub fn scan_overview() -> ScanResult<Overview> {
     scanners::scan_storage_overview()
