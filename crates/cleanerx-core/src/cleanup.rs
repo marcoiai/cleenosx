@@ -150,7 +150,13 @@ pub fn execute_cleanup_plan(execution: CleanupExecution) -> ScanResult<CleanupOu
     }
 
     if execution.elevated {
-        return execute_cleanup_plan_elevated(&plan, logs);
+        let result = execute_cleanup_plan_elevated(&plan, logs);
+        PREPARED_PLANS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .expect("cleanup prepared plans poisoned")
+            .remove(&execution.plan_id);
+        return result;
     }
 
     let allowlist = ALLOWLIST
