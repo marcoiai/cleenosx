@@ -1,6 +1,7 @@
-# CleanerX
+# Cleenosx
 
-CleanerX is a macOS-only storage cleanup app for understanding where SSD space went, especially the confusing "System Data" bucket. The MVP scans, explains, classifies, lets the user select whole files or directories, and removes them only after strong confirmation.
+Cleenosx is a macOS-only storage cleanup app for understanding where SSD space went, especially the confusing "System Data" bucket. 
+It scans, explains, classifies, lets the user select files or whole directories, and, remove them only after strong (3) confirmations.
 
 The project has three entry points that share the same Rust domain logic:
 
@@ -8,11 +9,9 @@ The project has three entry points that share the same Rust domain logic:
 - A guided terminal CLI.
 - A generated macOS Recovery helper script for manual review workflows.
 
-## MVP
+## Objective
 
-The MVP is simple: help the user find what is taking space, drill into the biggest blocks, warn what is safer or riskier to remove, select whole files or directories, and remove them only after strong confirmation.
-
-The current code is still safe-mode while removal is being implemented. Cleanup actions are modeled in the API, but they return dry-run outcomes. Snapshot thinning is also disabled.
+Is simple: help the user find what is taking space, drill into the biggest blocks, warn what is safer or riskier to remove, select whole files and/or directories, and, remove them only after strong (3) confirmations.
 
 Implemented scan areas include:
 
@@ -85,14 +84,13 @@ docs/                   Product and engineering documentation
 
 ## Safety Model
 
-CleanerX treats macOS storage cleanup as a high-risk operation. The MVP follows these rules:
+CleanerX treats macOS storage cleanup as a high-risk operation.
 
 - Scans are safe to run.
-- Removals require explicit selected files/directories and confirmation.
+- Removals require explicitly selected files/directories and confirmations.
 - Rust `target` directories are valid cleanup candidates because Cargo can rebuild them.
 - Whole volumes, whole `AssetsV2`, broad system paths, projects, and user documents are not cleanup targets.
 - SIP or `restricted` paths are marked as read-only/system risks.
-- Destructive APIs are currently placeholders until explicit review, confirmation, and reversibility rules are implemented.
 - macOS command failures become logs and partial results instead of crashes.
 
 ## Documentation
