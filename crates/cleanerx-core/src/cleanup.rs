@@ -360,9 +360,7 @@ fn execute_cleanup_plan_elevated(
             }
         }
         Ok(status) => cleanup_refused(
-            &format!(
-                "Elevated cleanup did not complete. osascript exited with status {status}."
-            ),
+            &format!("Elevated cleanup did not complete. osascript exited with status {status}."),
             logs,
         ),
         Err(error) => cleanup_refused(

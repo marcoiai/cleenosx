@@ -1,16 +1,19 @@
 use crate::classify::{action_profile_for_finding, classify_path, finding_for_path};
 use crate::cleanup::{cleanup_candidate_id, register_usage_nodes};
-use crate::command::{log_command_error, run, run_partial_with_timeout_and_cancel};
+use crate::command::{
+    log_command_error, run, run_partial_with_cancel, CommandError, CommandOutput,
+};
 use crate::models::{
-    DeepScanResult, DeepScanWarningsSummary, Finding, Overview, RiskLevel, ScanLog, ScanResult,
-    StorageCategory, StorageSummary, UsageKind, UsageNode, VolumeInfo,
+    DeepScanProgress, DeepScanResult, DeepScanWarningsSummary, Finding, Overview, RiskLevel,
+    ScanLog, ScanResult, StorageCategory, StorageSummary, UsageKind, UsageNode, VolumeInfo,
+    VolumeOperationResult,
 };
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const DATA_VOLUME_PATH: &str = "/System/Volumes/Data";
 const ASSETS_V2_PATHS: &[&str] = &[
@@ -42,7 +45,6 @@ const RUST_TARGET_SCAN_ROOT_HINTS: &[&str] = &[
     "Documents",
 ];
 const RUST_TARGET_SCAN_MAX_DEPTH: usize = 8;
-const DEEP_SCAN_TIMEOUT: Duration = Duration::from_secs(120);
 static DEEP_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 static DEEP_SCAN_CANCEL: AtomicBool = AtomicBool::new(false);
 
@@ -93,6 +95,344 @@ pub fn scan_volumes() -> ScanResult<Vec<VolumeInfo>> {
         data: volumes,
         logs,
     }
+}
+
+pub fn mount_volume(identifier: String, elevated: bool) -> ScanResult<VolumeOperationResult> {
+    run_volume_operation(identifier, VolumeOperation::Mount, elevated)
+}
+
+pub fn unmount_volume(identifier: String, elevated: bool) -> ScanResult<VolumeOperationResult> {
+    run_volume_operation(identifier, VolumeOperation::Unmount, elevated)
+}
+
+#[derive(Clone, Copy)]
+enum VolumeOperation {
+    Mount,
+    Unmount,
+}
+
+impl VolumeOperation {
+    fn diskutil_action(self) -> &'static str {
+        match self {
+            Self::Mount => "mount",
+            Self::Unmount => "unmount",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Mount => "mount",
+            Self::Unmount => "unmount",
+        }
+    }
+}
+
+fn run_volume_operation(
+    identifier: String,
+    operation: VolumeOperation,
+    elevated: bool,
+) -> ScanResult<VolumeOperationResult> {
+    let identifier = identifier.trim().to_string();
+    let mut logs = vec![ScanLog::info(format!(
+        "Preparing to {} volume {identifier}.",
+        operation.label()
+    ))];
+
+    let before = scan_volumes();
+    logs.extend(before.logs);
+
+    if identifier.is_empty() || identifier.contains('\0') || identifier.contains('\n') {
+        logs.push(ScanLog::error(
+            "Volume operation refused: invalid volume identifier.",
+        ));
+        return ScanResult {
+            data: volume_operation_result(before.data, None),
+            logs,
+        };
+    }
+
+    let volume = find_volume_for_identifier(&before.data, &identifier).cloned();
+    if let Some(volume) = &volume {
+        match operation {
+            VolumeOperation::Mount => {
+                if volume.mounted {
+                    logs.push(ScanLog::info(format!(
+                        "{} is already mounted.",
+                        volume.identifier
+                    )));
+                    return ScanResult {
+                        data: volume_operation_result(before.data, volume.mount_point.clone()),
+                        logs,
+                    };
+                }
+                if volume.locked.unwrap_or(false) {
+                    logs.push(ScanLog::warning(format!(
+                        "{} is locked. Unlock it before mounting.",
+                        volume.identifier
+                    )));
+                    return ScanResult {
+                        data: volume_operation_result(before.data, None),
+                        logs,
+                    };
+                }
+                if is_protected_support_volume(volume) {
+                    logs.push(ScanLog::warning(format!(
+                        "{} is a protected APFS support volume; cleenosx will not mount it for cleanup.",
+                        volume.identifier
+                    )));
+                    return ScanResult {
+                        data: volume_operation_result(before.data, None),
+                        logs,
+                    };
+                }
+            }
+            VolumeOperation::Unmount => {
+                if !volume.mounted {
+                    logs.push(ScanLog::info(format!(
+                        "{} is already unmounted.",
+                        volume.identifier
+                    )));
+                    return ScanResult {
+                        data: volume_operation_result(before.data, None),
+                        logs,
+                    };
+                }
+                if is_protected_live_mount(volume) {
+                    logs.push(ScanLog::warning(format!(
+                        "{} is a live system/support mount; cleenosx will not unmount it.",
+                        volume.identifier
+                    )));
+                    return ScanResult {
+                        data: volume_operation_result(before.data, volume.mount_point.clone()),
+                        logs,
+                    };
+                }
+            }
+        }
+    }
+
+    if elevated {
+        logs.push(ScanLog::info(format!(
+            "Requesting administrator permission to {} volume {identifier}.",
+            operation.label()
+        )));
+    }
+
+    let command_target = volume_operation_target(volume.as_ref(), &identifier, operation);
+    let completed =
+        match run_diskutil_volume_operation(command_target.as_str(), operation, elevated) {
+            Ok(output) => {
+                let output = output.trim();
+                logs.push(ScanLog::info(if output.is_empty() {
+                    format!("diskutil {} completed.", operation.label())
+                } else {
+                    output.to_string()
+                }));
+                true
+            }
+            Err(error) if matches!(operation, VolumeOperation::Unmount) => {
+                logs.push(log_command_error(
+                    &format!("diskutil {} {command_target} failed", operation.label()),
+                    &error,
+                ));
+                logs.push(ScanLog::info(format!(
+                    "Trying umount fallback for {command_target}."
+                )));
+                match run_umount_volume(command_target.as_str(), elevated) {
+                    Ok(output) => {
+                        let output = output.trim();
+                        logs.push(ScanLog::info(if output.is_empty() {
+                            "umount completed.".to_string()
+                        } else {
+                            output.to_string()
+                        }));
+                        true
+                    }
+                    Err(fallback_error) => {
+                        logs.push(log_command_error(
+                            &format!("umount {command_target} failed"),
+                            &fallback_error,
+                        ));
+                        false
+                    }
+                }
+            }
+            Err(error) => {
+                logs.push(log_command_error(
+                    &format!("diskutil {} {command_target} failed", operation.label()),
+                    &error,
+                ));
+                false
+            }
+        };
+
+    let after = scan_volumes();
+    logs.extend(after.logs);
+    let mount_point = match operation {
+        VolumeOperation::Mount => find_volume_mount_point(&after.data, &identifier)
+            .or_else(|| diskutil_mount_point(&command_target, &mut logs)),
+        VolumeOperation::Unmount => completed
+            .then(|| {
+                volume
+                    .and_then(|volume| volume.mount_point)
+                    .or_else(|| identifier.starts_with('/').then(|| identifier.clone()))
+            })
+            .flatten(),
+    };
+
+    ScanResult {
+        data: volume_operation_result(after.data, mount_point),
+        logs,
+    }
+}
+
+fn volume_operation_target(
+    volume: Option<&VolumeInfo>,
+    requested: &str,
+    operation: VolumeOperation,
+) -> String {
+    match operation {
+        VolumeOperation::Mount => volume
+            .map(|volume| volume.identifier.clone())
+            .unwrap_or_else(|| requested.to_string()),
+        VolumeOperation::Unmount => volume
+            .and_then(|volume| volume.mount_point.clone())
+            .unwrap_or_else(|| requested.to_string()),
+    }
+}
+
+fn volume_operation_result(
+    volumes: Vec<VolumeInfo>,
+    mount_point: Option<String>,
+) -> VolumeOperationResult {
+    VolumeOperationResult {
+        volumes,
+        mount_point,
+    }
+}
+
+fn find_volume_mount_point(volumes: &[VolumeInfo], identifier: &str) -> Option<String> {
+    find_volume_for_identifier(volumes, identifier).and_then(|volume| volume.mount_point.clone())
+}
+
+fn find_volume_for_identifier<'a>(
+    volumes: &'a [VolumeInfo],
+    identifier: &str,
+) -> Option<&'a VolumeInfo> {
+    let normalized = identifier.trim_start_matches("/dev/");
+    volumes
+        .iter()
+        .find(|volume| {
+            volume.identifier == identifier
+                || volume.identifier.trim_start_matches("/dev/") == normalized
+                || volume.mount_point.as_deref() == Some(identifier)
+        })
+        .or_else(|| nearest_mount_for_path(volumes, identifier))
+}
+
+fn nearest_mount_for_path<'a>(volumes: &'a [VolumeInfo], path: &str) -> Option<&'a VolumeInfo> {
+    if !path.starts_with('/') {
+        return None;
+    }
+
+    volumes
+        .iter()
+        .filter_map(|volume| {
+            let mount_point = volume.mount_point.as_deref()?;
+            path_contains_mount(path, mount_point).then_some((volume, mount_point.len()))
+        })
+        .max_by_key(|(_, mount_len)| *mount_len)
+        .map(|(volume, _)| volume)
+}
+
+fn path_contains_mount(path: &str, mount_point: &str) -> bool {
+    let path = trim_trailing_slash(path);
+    let mount_point = trim_trailing_slash(mount_point);
+    path == mount_point || path.starts_with(&format!("{mount_point}/"))
+}
+
+fn trim_trailing_slash(path: &str) -> &str {
+    if path == "/" {
+        return path;
+    }
+    path.trim_end_matches('/')
+}
+
+fn diskutil_mount_point(identifier: &str, logs: &mut Vec<ScanLog>) -> Option<String> {
+    let output = match run("diskutil", &["info", identifier]) {
+        Ok(output) => output.stdout,
+        Err(error) => {
+            logs.push(log_command_error(
+                &format!("diskutil info {identifier} failed"),
+                &error,
+            ));
+            return None;
+        }
+    };
+    parse_diskutil_info_mount_point(&output)
+}
+
+fn parse_diskutil_info_mount_point(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("Mount Point:")?.trim();
+        (!value.is_empty() && value != "Not Mounted").then(|| value.to_string())
+    })
+}
+
+fn run_diskutil_volume_operation(
+    identifier: &str,
+    operation: VolumeOperation,
+    elevated: bool,
+) -> Result<String, CommandError> {
+    if !elevated {
+        return run("diskutil", &[operation.diskutil_action(), identifier])
+            .map(|output| output.stdout);
+    }
+
+    let shell_script = format!(
+        "diskutil {} {}",
+        operation.diskutil_action(),
+        shell_quote(identifier)
+    );
+    let apple_script = format!(
+        "do shell script {} with administrator privileges",
+        applescript_quote(&shell_script)
+    );
+    run("osascript", &["-e", apple_script.as_str()]).map(|output| output.stdout)
+}
+
+fn run_umount_volume(target: &str, elevated: bool) -> Result<String, CommandError> {
+    if !elevated {
+        return run("/sbin/umount", &[target]).map(|output| output.stdout);
+    }
+
+    let shell_script = format!("/sbin/umount {}", shell_quote(target));
+    let apple_script = format!(
+        "do shell script {} with administrator privileges",
+        applescript_quote(&shell_script)
+    );
+    run("osascript", &["-e", apple_script.as_str()]).map(|output| output.stdout)
+}
+
+fn is_protected_support_volume(volume: &VolumeInfo) -> bool {
+    matches!(
+        volume.role.as_deref(),
+        Some(
+            "System" | "Preboot" | "VM" | "Update" | "Recovery" | "xART" | "Hardware" | "Baseband"
+        )
+    )
+}
+
+fn is_protected_live_mount(volume: &VolumeInfo) -> bool {
+    matches!(
+        volume.mount_point.as_deref(),
+        Some(
+            "/" | DATA_VOLUME_PATH
+                | "/System/Volumes/Preboot"
+                | "/System/Volumes/VM"
+                | "/System/Volumes/Update"
+        )
+    ) || is_protected_support_volume(volume)
 }
 
 fn merge_mount_metadata(volumes: &mut Vec<VolumeInfo>, logs: &mut Vec<ScanLog>) {
@@ -180,7 +520,7 @@ pub fn scan_data_usage() -> ScanResult<Vec<UsageNode>> {
     let mut logs = vec![ScanLog::info(format!(
         "Scanning large blocks at {DATA_VOLUME_PATH}."
     ))];
-    let scan = scan_usage_path(DATA_VOLUME_PATH, &mut logs);
+    let scan = scan_usage_path(DATA_VOLUME_PATH, &mut logs, false);
 
     ScanResult {
         data: scan.entries,
@@ -191,7 +531,7 @@ pub fn scan_data_usage() -> ScanResult<Vec<UsageNode>> {
 pub fn scan_user_usage() -> ScanResult<Vec<UsageNode>> {
     let home = env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
     let mut logs = vec![ScanLog::info(format!("Scanning user blocks at {home}."))];
-    let scan = scan_usage_path(&home, &mut logs);
+    let scan = scan_usage_path(&home, &mut logs, false);
 
     ScanResult {
         data: scan.entries,
@@ -201,7 +541,7 @@ pub fn scan_user_usage() -> ScanResult<Vec<UsageNode>> {
 
 pub fn scan_path_usage(path: &str) -> ScanResult<Vec<UsageNode>> {
     let mut logs = vec![ScanLog::info(format!("Scanning blocks at {path}."))];
-    let scan = scan_usage_path(path, &mut logs);
+    let scan = scan_usage_path(path, &mut logs, false);
 
     ScanResult {
         data: scan.entries,
@@ -209,7 +549,18 @@ pub fn scan_path_usage(path: &str) -> ScanResult<Vec<UsageNode>> {
     }
 }
 
-pub fn start_deep_scan(path: &str) -> ScanResult<DeepScanResult> {
+pub fn start_deep_scan(path: &str, elevated: bool) -> ScanResult<DeepScanResult> {
+    start_deep_scan_with_progress(path, elevated, |_| {})
+}
+
+pub fn start_deep_scan_with_progress<F>(
+    path: &str,
+    elevated: bool,
+    on_progress: F,
+) -> ScanResult<DeepScanResult>
+where
+    F: Fn(DeepScanProgress) + Send + Sync,
+{
     let path = path.trim();
     if !Path::new(path).is_absolute() || path.contains('\0') || path.contains('\n') {
         return ScanResult {
@@ -255,7 +606,7 @@ pub fn start_deep_scan(path: &str) -> ScanResult<DeepScanResult> {
     DEEP_SCAN_CANCEL.store(false, Ordering::Release);
     let mut logs = vec![ScanLog::info(format!("Starting deep scan at {path}."))];
     let started = Instant::now();
-    let scan = scan_usage_path(path, &mut logs);
+    let scan = scan_usage_path_with_progress(path, &mut logs, elevated, Some(&on_progress));
     let duration_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
     ScanResult {
@@ -350,7 +701,7 @@ pub fn scan_assets_v2() -> ScanResult<Vec<Finding>> {
                     risk: RiskLevel::ReadOnlySystem,
                     reason: "Known large MobileAsset class inside protected AssetsV2 storage."
                         .to_string(),
-                    recommended_action: "Inspect only in CleanerX; do not remove in normal boot."
+                    recommended_action: "Inspect only in cleenosx; do not remove in normal boot."
                         .to_string(),
                     destructive: false,
                     action_profile: Some(action_profile),
@@ -408,10 +759,7 @@ pub fn scan_rust_artifacts() -> ScanResult<Vec<Finding>> {
     let mut logs = vec![ScanLog::info("Scanning Rust toolchain/cache locations.")];
     let home = env::var("HOME").unwrap_or_default();
     let mut findings = Vec::new();
-    let paths = [
-        format!("{home}/.rustup"),
-        format!("{home}/.cargo"),
-    ];
+    let paths = [format!("{home}/.rustup"), format!("{home}/.cargo")];
     let mut target_roots = discover_rust_target_directories(&home);
 
     for path in paths {
@@ -448,7 +796,12 @@ fn discover_rust_target_directories(home: &str) -> Vec<String> {
         if !Path::new(&base).exists() {
             continue;
         }
-        gather_target_directories(Path::new(&base), 0, RUST_TARGET_SCAN_MAX_DEPTH, &mut findings);
+        gather_target_directories(
+            Path::new(&base),
+            0,
+            RUST_TARGET_SCAN_MAX_DEPTH,
+            &mut findings,
+        );
     }
 
     findings.sort();
@@ -493,12 +846,7 @@ fn gather_target_directories(
             continue;
         }
 
-        gather_target_directories(
-            &entry.path(),
-            depth + 1,
-            max_depth,
-            findings,
-        );
+        gather_target_directories(&entry.path(), depth + 1, max_depth, findings);
     }
 }
 
@@ -797,7 +1145,16 @@ struct UsageScan {
     warnings_summary: DeepScanWarningsSummary,
 }
 
-fn scan_usage_path(path: &str, logs: &mut Vec<ScanLog>) -> UsageScan {
+fn scan_usage_path(path: &str, logs: &mut Vec<ScanLog>, elevated: bool) -> UsageScan {
+    scan_usage_path_with_progress(path, logs, elevated, None)
+}
+
+fn scan_usage_path_with_progress(
+    path: &str,
+    logs: &mut Vec<ScanLog>,
+    elevated: bool,
+    on_progress: Option<&(dyn Fn(DeepScanProgress) + Send + Sync)>,
+) -> UsageScan {
     if !Path::new(path).exists() {
         logs.push(ScanLog::warning(format!(
             "{path} does not exist or is not mounted."
@@ -815,98 +1172,158 @@ fn scan_usage_path(path: &str, logs: &mut Vec<ScanLog>) -> UsageScan {
     }
 
     let scan_path = scan_operand_path(path);
-    let output = match run_partial_with_timeout_and_cancel(
-        "du",
-        &["-x", "-k", "-d", "1", &scan_path],
-        DEEP_SCAN_TIMEOUT,
-        Some(&DEEP_SCAN_CANCEL),
-    ) {
-        Ok(output) => output,
-        Err(error) => {
-            logs.push(ScanLog::error(format!(
-                "du scan failed for {path}: {error}"
-            )));
-            return UsageScan {
-                entries: Vec::new(),
-                partial: false,
-                canceled: false,
-                warnings_summary: DeepScanWarningsSummary {
-                    unexpected_errors: vec![error.to_string()],
-                    ..DeepScanWarningsSummary::default()
-                },
-            };
+    let targets = direct_scan_targets(&scan_path, logs);
+    let total_items = targets.len();
+    let mut processed_items = 0usize;
+    let mut nodes = Vec::new();
+    let mut warnings_summary = DeepScanWarningsSummary::default();
+    let mut partial = false;
+    let mut canceled = false;
+
+    if elevated {
+        logs.push(ScanLog::info(
+            "Requesting administrator permission for this scan.".to_string(),
+        ));
+    }
+
+    emit_deep_scan_progress(
+        path,
+        None,
+        processed_items,
+        total_items,
+        false,
+        total_items == 0,
+        on_progress,
+    );
+
+    for target in targets {
+        if DEEP_SCAN_CANCEL.load(Ordering::Acquire) {
+            canceled = true;
+            partial = true;
+            logs.push(ScanLog::warning(
+                "du scan was canceled before the next item started.".to_string(),
+            ));
+            break;
         }
-    };
 
-    let mut nodes = output
-        .stdout
-        .lines()
-        .filter_map(|line| parse_du_line(line, logs))
-        .collect::<Vec<_>>();
-    append_direct_file_nodes(path, &mut nodes, logs);
-    nodes.sort_by(|left, right| right.size_bytes.cmp(&left.size_bytes));
-
-    let stderr_summary = summarize_du_stderr(&output.stderr);
-    let warning_messages = stderr_summary.warning_messages();
-    let has_expected_warnings = stderr_summary.has_expected_warnings();
-    let mut warnings_summary = stderr_summary.warnings;
-    if output.timed_out {
-        let message = format!(
-            "du timed out after {}s and the process was stopped.",
-            DEEP_SCAN_TIMEOUT.as_secs()
+        emit_deep_scan_progress(
+            path,
+            Some(&target),
+            processed_items,
+            total_items,
+            false,
+            false,
+            on_progress,
         );
-        logs.push(ScanLog::warning(message.clone()));
-        push_sample(&mut warnings_summary.samples, &message);
-    }
-    if output.canceled {
-        let message = "du scan was canceled and the process was stopped.".to_string();
-        logs.push(ScanLog::warning(message.clone()));
-        push_sample(&mut warnings_summary.samples, &message);
-    }
-    for warning in warning_messages {
-        logs.push(ScanLog::warning(warning));
-    }
-    for error in &warnings_summary.unexpected_errors {
-        logs.push(ScanLog::error(format!("du unexpected error: {error}")));
-    }
 
-    let has_unexpected_errors = !warnings_summary.unexpected_errors.is_empty();
-    if nodes.is_empty() && has_unexpected_errors {
-        logs.push(ScanLog::error(format!(
-            "du scan for {path} did not return parseable entries."
-        )));
-    } else if nodes.is_empty() && !output.success && has_expected_warnings {
-        logs.push(ScanLog::warning(format!(
-            "du scan for {path} returned no visible entries after expected macOS permission skips."
-        )));
-    } else if nodes.is_empty() && output.timed_out {
-        logs.push(ScanLog::warning(format!(
-            "du scan for {path} was stopped by timeout before visible entries were returned."
-        )));
-    } else if nodes.is_empty() && output.canceled {
-        logs.push(ScanLog::warning(format!(
-            "du scan for {path} was canceled before visible entries were returned."
-        )));
-    }
+        let output = match run_du_target_scan(&target, elevated) {
+            Ok(output) => output,
+            Err(error) => {
+                partial = true;
+                logs.push(ScanLog::error(format!(
+                    "du scan failed for {target}: {error}"
+                )));
+                push_sample(&mut warnings_summary.unexpected_errors, &error.to_string());
+                push_sample(&mut warnings_summary.samples, &error.to_string());
+                processed_items += 1;
+                emit_deep_scan_progress(
+                    path,
+                    Some(&target),
+                    processed_items,
+                    total_items,
+                    false,
+                    processed_items == total_items,
+                    on_progress,
+                );
+                continue;
+            }
+        };
 
-    if !output.success && !nodes.is_empty() {
-        if output.timed_out {
-            logs.push(ScanLog::warning(format!(
-                "du scan for {path} returned partial results before timeout."
+        let mut target_nodes = output
+            .stdout
+            .lines()
+            .filter_map(|line| parse_du_line(line, logs))
+            .collect::<Vec<_>>();
+        let target_had_nodes = !target_nodes.is_empty();
+        nodes.append(&mut target_nodes);
+
+        let stderr_summary = summarize_du_stderr(&output.stderr);
+        let warning_messages = stderr_summary.warning_messages();
+        let has_expected_warnings = stderr_summary.has_expected_warnings();
+        let has_unexpected_errors = !stderr_summary.warnings.unexpected_errors.is_empty();
+        let unexpected_errors = stderr_summary.warnings.unexpected_errors.clone();
+        merge_warnings_summary(&mut warnings_summary, stderr_summary.warnings);
+        for warning in warning_messages {
+            logs.push(ScanLog::warning(warning));
+        }
+        for error in unexpected_errors {
+            logs.push(ScanLog::error(format!("du unexpected error: {error}")));
+        }
+
+        if output.canceled {
+            canceled = true;
+            partial = true;
+            let message = "du scan was canceled and the process was stopped.".to_string();
+            logs.push(ScanLog::warning(message.clone()));
+            push_sample(&mut warnings_summary.samples, &message);
+        } else if !output.success || has_expected_warnings || has_unexpected_errors {
+            partial = true;
+        }
+
+        if !target_had_nodes && has_unexpected_errors {
+            logs.push(ScanLog::error(format!(
+                "du scan for {target} did not return parseable entries."
             )));
-        } else if output.canceled {
+        } else if output.canceled && !target_had_nodes {
             logs.push(ScanLog::warning(format!(
-                "du scan for {path} returned partial results before cancellation."
+                "du scan for {target} was canceled before visible entries were returned."
             )));
-        } else {
+        } else if !target_had_nodes && !output.success && has_expected_warnings {
             logs.push(ScanLog::warning(format!(
-                "du scan for {path} returned partial results with exit status {}.",
+                "du scan for {target} returned no visible entries after expected macOS permission skips."
+            )));
+        } else if !output.success {
+            logs.push(ScanLog::warning(format!(
+                "du scan for {target} returned partial results with exit status {}.",
                 output
                     .status
                     .map(|status| status.to_string())
                     .unwrap_or_else(|| "unknown".to_string())
             )));
         }
+
+        if output.canceled {
+            emit_deep_scan_progress(
+                path,
+                Some(&target),
+                processed_items,
+                total_items,
+                true,
+                false,
+                on_progress,
+            );
+            break;
+        }
+
+        processed_items += 1;
+        emit_deep_scan_progress(
+            path,
+            Some(&target),
+            processed_items,
+            total_items,
+            false,
+            processed_items == total_items,
+            on_progress,
+        );
+    }
+
+    append_direct_file_nodes(path, &mut nodes, logs);
+    nodes.sort_by(|left, right| right.size_bytes.cmp(&left.size_bytes));
+
+    if canceled && !nodes.is_empty() {
+        logs.push(ScanLog::warning(format!(
+            "du scan for {path} returned partial results before cancellation."
+        )));
     }
 
     UsageScan {
@@ -914,14 +1331,112 @@ fn scan_usage_path(path: &str, logs: &mut Vec<ScanLog>) -> UsageScan {
             register_usage_nodes(&nodes);
             nodes
         },
-        partial: !output.success
-            || output.timed_out
-            || output.canceled
-            || has_expected_warnings
-            || has_unexpected_errors,
-        canceled: output.canceled,
+        partial,
+        canceled,
         warnings_summary,
     }
+}
+
+fn direct_scan_targets(path: &str, logs: &mut Vec<ScanLog>) -> Vec<String> {
+    let path_ref = Path::new(path);
+    let metadata = match fs::symlink_metadata(path_ref) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            logs.push(ScanLog::warning(format!(
+                "Could not inspect {path}: {error}. Falling back to direct du scan."
+            )));
+            return vec![path.to_string()];
+        }
+    };
+
+    if !metadata.is_dir() {
+        return vec![path.to_string()];
+    }
+
+    let entries = match fs::read_dir(path_ref) {
+        Ok(entries) => entries,
+        Err(error) => {
+            logs.push(ScanLog::warning(format!(
+                "Could not list {path}: {error}. Falling back to direct du scan."
+            )));
+            return vec![path.to_string()];
+        }
+    };
+
+    let mut targets = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    targets.sort();
+    targets
+}
+
+fn emit_deep_scan_progress(
+    path: &str,
+    current_path: Option<&str>,
+    processed_items: usize,
+    total_items: usize,
+    canceled: bool,
+    finished: bool,
+    on_progress: Option<&(dyn Fn(DeepScanProgress) + Send + Sync)>,
+) {
+    let Some(on_progress) = on_progress else {
+        return;
+    };
+    let percent = if total_items == 0 {
+        if finished {
+            100
+        } else {
+            0
+        }
+    } else {
+        ((processed_items as f64 / total_items as f64) * 100.0)
+            .round()
+            .clamp(0.0, 100.0) as u8
+    };
+
+    on_progress(DeepScanProgress {
+        path: path.to_string(),
+        current_path: current_path.map(ToString::to_string),
+        processed_items,
+        total_items,
+        percent,
+        canceled,
+        finished,
+    });
+}
+
+fn merge_warnings_summary(target: &mut DeepScanWarningsSummary, incoming: DeepScanWarningsSummary) {
+    target.permission_denied += incoming.permission_denied;
+    target.operation_not_permitted += incoming.operation_not_permitted;
+    target.vanished_paths += incoming.vanished_paths;
+    for sample in incoming.samples {
+        push_sample(&mut target.samples, &sample);
+    }
+    for error in incoming.unexpected_errors {
+        push_sample(&mut target.unexpected_errors, &error);
+    }
+}
+
+fn run_du_target_scan(scan_path: &str, elevated: bool) -> Result<CommandOutput, CommandError> {
+    if !elevated {
+        return run_partial_with_cancel(
+            "du",
+            &["-x", "-k", "-s", scan_path],
+            Some(&DEEP_SCAN_CANCEL),
+        );
+    }
+
+    let shell_script = format!("du -x -k -s {}", shell_quote(scan_path));
+    let apple_script = format!(
+        "do shell script {} with administrator privileges",
+        applescript_quote(&shell_script)
+    );
+    run_partial_with_cancel(
+        "osascript",
+        &["-e", apple_script.as_str()],
+        Some(&DEEP_SCAN_CANCEL),
+    )
 }
 
 fn scan_operand_path(path: &str) -> String {
@@ -1103,6 +1618,14 @@ fn disk_usage_bytes(path: &str, logs: &mut Vec<ScanLog>) -> Option<u64> {
         .map(|kib| kib.saturating_mul(1024))
 }
 
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn applescript_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 fn summarize_volumes(volumes: &[VolumeInfo]) -> StorageSummary {
     let primary = volumes
         .iter()
@@ -1231,6 +1754,24 @@ fn parse_sizeish_bytes(value: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
+    fn test_volume(identifier: &str, mount_point: Option<&str>) -> VolumeInfo {
+        VolumeInfo {
+            name: identifier.to_string(),
+            identifier: identifier.to_string(),
+            role: None,
+            mount_point: mount_point.map(ToString::to_string),
+            mounted: mount_point.is_some(),
+            encrypted: None,
+            locked: None,
+            flags: Vec::new(),
+            capacity_bytes: None,
+            used_bytes: None,
+            available_bytes: None,
+            risk: RiskLevel::SafeToAnalyze,
+            notes: Vec::new(),
+        }
+    }
+
     #[test]
     fn parses_df_line_with_mount_point() {
         let line = "/dev/disk3s5 488245288 400000000 88245288 82% 1 2 34% /System/Volumes/Data";
@@ -1243,6 +1784,40 @@ mod tests {
     fn parses_restricted_flag() {
         let flags = parse_flags_from_ls("drwxr-xr-x@ 3 root wheel restricted 96 Jun 1 AssetsV2");
         assert_eq!(flags, vec!["restricted"]);
+    }
+
+    #[test]
+    fn parses_diskutil_info_mount_point() {
+        let output = "Device Identifier:         disk4s2\n\
+             Volume Name:               External\n\
+             Mount Point:               /Volumes/External";
+        assert_eq!(
+            parse_diskutil_info_mount_point(output).as_deref(),
+            Some("/Volumes/External")
+        );
+        assert_eq!(
+            parse_diskutil_info_mount_point("Mount Point:               Not Mounted"),
+            None
+        );
+    }
+
+    #[test]
+    fn finds_nearest_mount_for_nested_runtime_path() {
+        let volumes = vec![
+            test_volume("/dev/disk3s5", Some("/System/Volumes/Data")),
+            test_volume(
+                "/dev/disk9s1",
+                Some("/Library/Developer/CoreSimulator/Cryptex/Images/bundle/Runtime"),
+            ),
+        ];
+        let nested_path = "/Library/Developer/CoreSimulator/Cryptex/Images/bundle/Runtime/System";
+        let volume = find_volume_for_identifier(&volumes, nested_path).unwrap();
+
+        assert_eq!(volume.identifier, "/dev/disk9s1");
+        assert_eq!(
+            volume_operation_target(Some(volume), nested_path, VolumeOperation::Unmount),
+            "/Library/Developer/CoreSimulator/Cryptex/Images/bundle/Runtime"
+        );
     }
 
     #[test]

@@ -1,10 +1,13 @@
 use cleanerx_core::{
     AdminSessionStatus, CleanupExecution, CleanupOutcome, CleanupSelection, CleanupSettings,
     DeepScanResult, Finding, Overview, PreparedCleanupPlan, ScanLog, ScanResult, UsageNode,
-    VolumeInfo,
+    VolumeInfo, VolumeOperationResult,
 };
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use tauri::Emitter;
+
+const DEEP_SCAN_PROGRESS_EVENT: &str = "deep-scan-progress";
 
 #[tauri::command]
 async fn get_storage_overview() -> ScanResult<Overview> {
@@ -90,13 +93,42 @@ async fn scan_volumes() -> ScanResult<Vec<VolumeInfo>> {
 }
 
 #[tauri::command]
+async fn mount_volume(
+    identifier: String,
+    elevated: Option<bool>,
+) -> ScanResult<VolumeOperationResult> {
+    blocking(move || cleanerx_core::mount_volume(identifier, elevated.unwrap_or(false))).await
+}
+
+#[tauri::command]
+async fn unmount_volume(
+    identifier: String,
+    elevated: Option<bool>,
+) -> ScanResult<VolumeOperationResult> {
+    blocking(move || cleanerx_core::unmount_volume(identifier, elevated.unwrap_or(false))).await
+}
+
+#[tauri::command]
 async fn scan_data_usage() -> ScanResult<Vec<UsageNode>> {
     blocking(cleanerx_core::scan_data_usage).await
 }
 
 #[tauri::command]
-async fn start_deep_scan(path: String) -> ScanResult<DeepScanResult> {
-    blocking(move || cleanerx_core::start_deep_scan(path)).await
+async fn start_deep_scan(
+    app: tauri::AppHandle,
+    path: String,
+    elevated: Option<bool>,
+) -> ScanResult<DeepScanResult> {
+    blocking(move || {
+        cleanerx_core::start_deep_scan_with_progress(
+            path,
+            elevated.unwrap_or(false),
+            move |progress| {
+                let _ = app.emit(DEEP_SCAN_PROGRESS_EVENT, progress);
+            },
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -278,6 +310,8 @@ pub fn run() {
             lock_admin_session,
             scan_overview,
             scan_volumes,
+            mount_volume,
+            unmount_volume,
             scan_data_usage,
             start_deep_scan,
             cancel_deep_scan,
@@ -299,5 +333,5 @@ pub fn run() {
             update_cleanup_settings
         ])
         .run(tauri::generate_context!())
-        .expect("error while running CleanerX");
+        .expect("error while running cleenosx");
 }

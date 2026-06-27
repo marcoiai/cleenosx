@@ -1,13 +1,16 @@
 # Mac App Store Preparation
 
-CleanerX can be packaged for the Mac App Store, but the Store build must be more restricted than the power-user/dev build.
+cleenosx can be packaged for the Mac App Store as a MealWare product, but the Store build must be more restricted than the power-user/dev build.
 
 ## Current Bundle Identity
 
-- Product name: `CleanerX`
+- Product name: `cleenosx`
+- Company brand: `MealWare`
 - Bundle identifier: `dev.cleanerx.desktop`
 - Category: `Utility`
 - Minimum macOS: `12.0`
+
+The visible app name has been rebranded to cleenosx under the MealWare company brand. The bundle identifier remains `dev.cleanerx.desktop` until the internal identifier refactor is done intentionally.
 
 The Bundle ID created in Apple Developer and App Store Connect must exactly match `dev.cleanerx.desktop`, or the identifier must be changed in `src-tauri/tauri.conf.json` before creating Apple profiles.
 
@@ -30,7 +33,7 @@ The normal/dev build keeps those power-user flows. This split exists because Mac
 4. Put the profile at:
 
 ```text
-src-tauri/profiles/CleanerX_Mac_App_Store.provisionprofile
+src-tauri/profiles/cleenosx_Mac_App_Store.provisionprofile
 ```
 
 5. Edit `src-tauri/Entitlements.appstore.plist` and replace both `TEAM_ID` placeholders with the Apple Team ID / App ID prefix.
@@ -59,9 +62,9 @@ After a signed `.app` exists, create the upload package with a Mac Installer Dis
 ```sh
 xcrun productbuild \
   --sign "3rd Party Mac Developer Installer: YOUR_NAME (TEAM_ID)" \
-  --component "target/release/bundle/macos/CleanerX.app" \
+  --component "target/release/bundle/macos/cleenosx.app" \
   /Applications \
-  CleanerX.pkg
+  cleenosx.pkg
 ```
 
 Then upload with App Store Connect API credentials:
@@ -70,7 +73,7 @@ Then upload with App Store Connect API credentials:
 xcrun altool \
   --upload-app \
   --type macos \
-  --file CleanerX.pkg \
+  --file cleenosx.pkg \
   --apiKey "$APPLE_API_KEY_ID" \
   --apiIssuer "$APPLE_API_ISSUER"
 ```

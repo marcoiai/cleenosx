@@ -1,6 +1,10 @@
-# CleanerX
+# cleenosx
 
-CleanerX is a macOS-only storage cleanup app for understanding where SSD space went, especially the confusing "System Data" bucket. The MVP scans, explains, classifies, lets the user select whole files or directories, and removes them only after strong confirmation.
+cleenosx is a MealWare macOS storage cleanup app for understanding where SSD space went, especially the confusing "System Data" bucket. The MVP scans, explains, classifies, lets the user select whole files or directories, and removes them only after strong confirmation.
+
+## Rebrand Status
+
+The visible product name is cleenosx, under the MealWare company brand. Internal package names, crate paths, environment variables, local storage keys, and the current bundle identifier still use `cleanerx` until a dedicated compatibility refactor.
 
 The project has three entry points that share the same Rust domain logic:
 
@@ -85,7 +89,7 @@ docs/                   Product and engineering documentation
 
 ## Safety Model
 
-CleanerX treats macOS storage cleanup as a high-risk operation. The MVP follows these rules:
+cleenosx treats macOS storage cleanup as a high-risk operation. The MVP follows these rules:
 
 - Scans are safe to run.
 - Removals require explicit selected files/directories and confirmation.

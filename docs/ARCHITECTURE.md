@@ -1,8 +1,8 @@
-# CleanerX Architecture
+# cleenosx Architecture
 
 ## Overview
 
-CleanerX is macOS-only. It is built around a small Rust library that wraps macOS storage tools such as `du`, `df`, `diskutil`, `tmutil`, and `ls`. The library turns raw command output into structured storage facts, risk labels, and cleanup candidates that the desktop app and CLI can present safely.
+cleenosx is a MealWare macOS-only app. It is built around a small Rust library that wraps macOS storage tools such as `du`, `df`, `diskutil`, `tmutil`, and `ls`. The library turns raw command output into structured storage facts, risk labels, and cleanup candidates that the desktop app and CLI can present safely.
 
 The desktop app is a Tauri shell with a React frontend. Rust owns domain logic and macOS system interaction. React owns presentation and calls Tauri commands through a small typed bridge.
 
@@ -139,7 +139,7 @@ Expected flow:
 
 The UI should make it easy to remove specific caches/build artifacts while making broad deletion inconvenient or impossible.
 
-Rust project `target` directories are first-class cleanup candidates. They are build artifacts that Cargo can recreate, so CleanerX may mark them as `attention` rather than `dangerous`, even when they live under a project folder. The surrounding project/source directory remains protected and should not be removable as a broad target.
+Rust project `target` directories are first-class cleanup candidates. They are build artifacts that Cargo can recreate, so cleenosx may mark them as `attention` rather than `dangerous`, even when they live under a project folder. The surrounding project/source directory remains protected and should not be removable as a broad target.
 
 ## Classification
 

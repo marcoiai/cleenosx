@@ -198,7 +198,7 @@ fn recommended_action_for(category: &StorageCategory, risk: &RiskLevel) -> &'sta
             "Good cleanup candidate after user confirmation. Cargo can rebuild it later."
         }
         (_, &RiskLevel::Dangerous) | (_, &RiskLevel::ReadOnlySystem) => {
-            "Do not remove from CleanerX."
+            "Do not remove from cleenosx."
         }
         (_, &RiskLevel::ReviewRequired) => "Review exact contents before selecting for cleanup.",
         _ => "Review path before selecting for cleanup.",
@@ -229,7 +229,7 @@ pub fn action_profile_for_finding(
             delete_capability: DeleteCapability {
                 can_delete: false,
                 user_facing_level: "Do not delete".to_string(),
-                user_facing_summary: "CleanerX should only measure and explain this space. macOS manages this content.".to_string(),
+                user_facing_summary: "cleenosx should only measure and explain this space. macOS manages this content.".to_string(),
                 technical_reason: "AssetsV2 is system-protected storage and should not be removed from a normal boot session.".to_string(),
             },
             ui: ActionUi {

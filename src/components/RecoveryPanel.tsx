@@ -1,4 +1,4 @@
-import { Clipboard, FileDown, TerminalSquare } from "lucide-react";
+import { AlertTriangle, Clipboard, FileDown, TerminalSquare } from "lucide-react";
 import { useState } from "react";
 import { useI18n } from "../i18n";
 import { exportRecoveryScript, generateRecoveryScript } from "../tauri";
@@ -58,14 +58,14 @@ export function RecoveryPanel() {
         {error && <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</div>}
 
         {exportedPath && (
-          <div className="mt-4 grid gap-3 rounded-lg bg-slate-50 p-3 text-sm text-ink-body">
+          <div className="mt-4 grid gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-ink-body">
             <div>
               <div className="text-xs font-semibold uppercase text-ink-muted">{t("recovery.created")}</div>
               <div className="mt-1 break-all font-mono text-xs text-ink-strong">{exportedPath}</div>
             </div>
-            <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
-              <div className="text-xs font-semibold uppercase text-blue-800">{t("recovery.stepsTitle")}</div>
-              <div className="mt-2 grid gap-1 text-sm text-blue-950">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-amber-900">{t("recovery.stepsTitle")}</div>
+              <div className="mt-2 grid gap-2 text-sm text-amber-950">
                 <div>{t("recovery.steps1")}</div>
                 <div>{t("recovery.steps2")}</div>
                 <div>{t("recovery.steps3")}</div>
@@ -73,11 +73,14 @@ export function RecoveryPanel() {
             </div>
             <div>
               <div className="text-xs font-semibold uppercase text-ink-muted">{t("recovery.terminal")}</div>
-              <code className="mt-1 block break-all rounded-lg bg-white p-2 font-mono text-xs text-ink-strong">
-                zsh /Volumes/*/Users/Shared/cx.sh
+              <code className="mt-1 block break-all rounded-lg border border-slate-300 bg-white p-3 font-mono text-xs text-ink-strong shadow-sm">
+                bash /Volumes/*/Users/Shared/cx.sh
               </code>
             </div>
-            <div className="text-xs text-ink-muted">{t("recovery.pasteHelp")}</div>
+            <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-950">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-rose-700" />
+              <div>{t("recovery.pasteHelp")}</div>
+            </div>
           </div>
         )}
       </section>

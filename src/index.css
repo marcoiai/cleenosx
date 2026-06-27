@@ -90,6 +90,10 @@ html.black .bg-white\/70 {
   background-color: rgb(16 20 31 / 0.78);
 }
 
+html.black .bg-white\/80 {
+  background-color: rgb(16 20 31 / 0.86);
+}
+
 html.black .bg-slate-50 {
   background-color: #151b28;
 }
@@ -104,6 +108,10 @@ html.black .bg-slate-200 {
 
 html.black .bg-blue-50 {
   background-color: #0b1f3a;
+}
+
+html.black .bg-blue-100 {
+  background-color: #102a4d;
 }
 
 html.black .bg-blue-700 {
@@ -132,6 +140,10 @@ html.black .bg-emerald-50 {
   background-color: #08251b;
 }
 
+html.black .bg-emerald-100 {
+  background-color: #103627;
+}
+
 html.black .hover\:bg-emerald-100:hover {
   background-color: #103627;
 }
@@ -146,6 +158,10 @@ html.black .bg-amber-100 {
 
 html.black .bg-red-50 {
   background-color: #2b0b0b;
+}
+
+html.black .bg-red-100 {
+  background-color: #3a1111;
 }
 
 html.black .border-slate-100,

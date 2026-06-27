@@ -1,8 +1,10 @@
 import { FolderOpen } from "lucide-react";
 import { useMemo } from "react";
-import { categoryLabel, formatBytes } from "../format";
+import { categoryLabel, formatBytes, riskSortRank } from "../format";
 import { useI18n } from "../i18n";
-import type { ActionProfile, Finding } from "../types";
+import type { Finding } from "../types";
+import { ActionScoreSummary } from "./ActionScoreSummary";
+import { PathText } from "./PathText";
 import { RiskChip } from "./RiskChip";
 
 interface FindingsListProps {
@@ -17,6 +19,7 @@ export function FindingsList({ findings, onScanPath, disabled = false }: Finding
     () =>
       [...findings].sort(
         (left, right) =>
+          riskSortRank(left.risk) - riskSortRank(right.risk) ||
           (right.sizeBytes ?? -1) - (left.sizeBytes ?? -1) ||
           left.title.localeCompare(right.title),
       ),
@@ -24,7 +27,7 @@ export function FindingsList({ findings, onScanPath, disabled = false }: Finding
   );
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white shadow-material">
+    <section className="min-w-0 rounded-lg border border-slate-200 bg-white shadow-material">
       <div className="border-b border-slate-200 px-4 py-3">
         <h2 className="text-sm font-semibold text-ink-strong">{t("findings.title")}</h2>
       </div>
@@ -75,7 +78,7 @@ function FindingCard({
         </div>
         <RiskChip risk={finding.risk} />
       </div>
-      {finding.path && <div className="mt-3 truncate font-mono text-xs text-ink-body">{finding.path}</div>}
+      {finding.path && <PathText path={finding.path} className="mt-3 text-ink-body" />}
       <div className="mt-3 text-sm text-ink-body">{finding.reason}</div>
       {actionProfile && (
         <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm text-ink-body">
@@ -85,10 +88,7 @@ function FindingCard({
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-sm font-medium text-ink-strong">{finding.recommendedAction}</div>
-          {actionProfile && <div className="mt-1 text-xs text-ink-muted">{formatActionScores(actionProfile)}</div>}
-          {actionProfile?.recommendation.nextAction && (
-            <div className="mt-1 text-xs text-ink-muted">{actionProfile.recommendation.nextAction}</div>
-          )}
+          {actionProfile && <ActionScoreSummary actionProfile={actionProfile} includeNextAction className="mt-2" />}
         </div>
         {finding.path && (
           <button
@@ -104,8 +104,4 @@ function FindingCard({
       </div>
     </article>
   );
-}
-
-function formatActionScores(actionProfile: ActionProfile) {
-  return `Safety ${actionProfile.scores.safetyPercent}% · Reclaim ${actionProfile.scores.reclaimValuePercent}% · Automation ${actionProfile.scores.automationPercent}% · Confidence ${actionProfile.scores.confidencePercent}%`;
 }

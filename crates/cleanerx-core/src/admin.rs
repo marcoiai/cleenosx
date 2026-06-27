@@ -23,7 +23,7 @@ pub fn admin_session_status() -> AdminSessionStatus {
         available: true,
         last_unlocked_at_ms: state.last_unlocked_at_ms,
         message: if state.unlocked {
-            "Admin Mode is enabled for this app session. CleanerX will prefer administrator cleanup when available.".to_string()
+            "Admin Mode is enabled for this app session. cleenosx will prefer administrator cleanup when available.".to_string()
         } else {
             "Admin Mode is off. Unlock once to reuse administrator cleanup through this app session.".to_string()
         },

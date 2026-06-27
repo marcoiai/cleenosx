@@ -32,12 +32,31 @@ pub fn scan_volumes() -> ScanResult<Vec<VolumeInfo>> {
     scanners::scan_volumes()
 }
 
+pub fn mount_volume(identifier: String, elevated: bool) -> ScanResult<VolumeOperationResult> {
+    scanners::mount_volume(identifier, elevated)
+}
+
+pub fn unmount_volume(identifier: String, elevated: bool) -> ScanResult<VolumeOperationResult> {
+    scanners::unmount_volume(identifier, elevated)
+}
+
 pub fn scan_data_usage() -> ScanResult<Vec<UsageNode>> {
     scanners::scan_data_usage()
 }
 
-pub fn start_deep_scan(path: String) -> ScanResult<DeepScanResult> {
-    scanners::start_deep_scan(&path)
+pub fn start_deep_scan(path: String, elevated: bool) -> ScanResult<DeepScanResult> {
+    scanners::start_deep_scan(&path, elevated)
+}
+
+pub fn start_deep_scan_with_progress<F>(
+    path: String,
+    elevated: bool,
+    on_progress: F,
+) -> ScanResult<DeepScanResult>
+where
+    F: Fn(DeepScanProgress) + Send + Sync,
+{
+    scanners::start_deep_scan_with_progress(&path, elevated, on_progress)
 }
 
 pub fn cancel_deep_scan() -> ScanResult<bool> {

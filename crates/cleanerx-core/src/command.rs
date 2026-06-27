@@ -2,7 +2,7 @@ use crate::models::ScanLog;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -16,8 +16,6 @@ pub enum CommandError {
         stderr: String,
         stdout: String,
     },
-    #[error("{program} timed out after {seconds}s")]
-    Timeout { program: String, seconds: u64 },
 }
 
 #[derive(Debug, Clone)]
@@ -26,7 +24,6 @@ pub struct CommandOutput {
     pub stderr: String,
     pub status: Option<i32>,
     pub success: bool,
-    pub timed_out: bool,
     pub canceled: bool,
 }
 
@@ -43,18 +40,9 @@ pub fn run(program: &str, args: &[&str]) -> Result<CommandOutput, CommandError> 
     command_output(program, output)
 }
 
-pub fn run_partial_with_timeout(
+pub fn run_partial_with_cancel(
     program: &str,
     args: &[&str],
-    timeout: Duration,
-) -> Result<CommandOutput, CommandError> {
-    run_partial_with_timeout_and_cancel(program, args, timeout, None)
-}
-
-pub fn run_partial_with_timeout_and_cancel(
-    program: &str,
-    args: &[&str],
-    timeout: Duration,
     cancel: Option<&AtomicBool>,
 ) -> Result<CommandOutput, CommandError> {
     let mut child = Command::new(program)
@@ -88,7 +76,6 @@ pub fn run_partial_with_timeout_and_cancel(
         buffer
     });
 
-    let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait().map_err(|error| CommandError::Spawn {
             program: program.to_string(),
@@ -101,7 +88,6 @@ pub fn run_partial_with_timeout_and_cancel(
                 stderr,
                 status: status.code(),
                 success: status.success(),
-                timed_out: false,
                 canceled: false,
             });
         }
@@ -116,23 +102,7 @@ pub fn run_partial_with_timeout_and_cancel(
                 stderr,
                 status: None,
                 success: false,
-                timed_out: false,
                 canceled: true,
-            });
-        }
-
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            let stdout = stdout_reader.join().unwrap_or_default();
-            let stderr = stderr_reader.join().unwrap_or_default().trim().to_string();
-            return Ok(CommandOutput {
-                stdout,
-                stderr,
-                status: None,
-                success: false,
-                timed_out: true,
-                canceled: false,
             });
         }
 
@@ -165,7 +135,6 @@ fn command_output(
         stderr,
         status,
         success,
-        timed_out: false,
         canceled: false,
     })
 }

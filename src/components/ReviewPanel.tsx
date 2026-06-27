@@ -1,10 +1,13 @@
-import { AlertTriangle, ArrowUp, CheckSquare, ChevronRight, ClipboardCheck, FolderOpen, RefreshCw, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowUp, CheckSquare, ChevronRight, CircleStop, ClipboardCheck, File, FolderOpen, RefreshCw, ShieldCheck, Trash2, Unplug, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { categoryLabel, formatBytes } from "../format";
+import { categoryLabel, formatBytes, riskSortRank } from "../format";
+import { useI18n } from "../i18n";
 import { formatScanWarningSummary, hasScanWarnings } from "../scanWarnings";
-import { cancelDeepScan, executeCleanupPlan, executeRootCleanupContinuation, prepareCleanupPlan, startDeepScan } from "../tauri";
-import type { ActionProfile, CleanupOutcome, PreparedCleanupItem, PreparedCleanupPlan, RiskLevel, ScanLog, UsageNode } from "../types";
+import { cancelDeepScan, executeCleanupPlan, executeRootCleanupContinuation, listenDeepScanProgress, prepareCleanupPlan, startDeepScan } from "../tauri";
+import type { CleanupOutcome, DeepScanProgress, PreparedCleanupItem, PreparedCleanupPlan, RiskLevel, ScanLog, UsageNode } from "../types";
+import { ActionScoreSummary } from "./ActionScoreSummary";
 import { LoadingButton } from "./LoadingButton";
+import { PathText } from "./PathText";
 import { RiskChip } from "./RiskChip";
 
 const TEST_DELETE_PATHS = new Set([
@@ -23,7 +26,9 @@ interface ReviewPanelProps {
   appStoreMode?: boolean;
   adminSessionUnlocked?: boolean;
   onLogs: (logs: ScanLog[]) => void;
+  onCleanupRecovered?: (deletedBytes: number) => void;
   onRescanPath?: (path: string) => void;
+  onUnmountAndRevealPath?: (path: string, elevated?: boolean) => void;
 }
 
 export function ReviewPanel({
@@ -35,8 +40,11 @@ export function ReviewPanel({
   appStoreMode = false,
   adminSessionUnlocked = false,
   onLogs,
+  onCleanupRecovered,
   onRescanPath,
+  onUnmountAndRevealPath,
 }: ReviewPanelProps) {
+  const { t } = useI18n();
   const [path, setPath] = useState(initialPath);
   const [manualPath, setManualPath] = useState(initialPath);
   const [nodes, setNodes] = useState<UsageNode[]>(initialNodes);
@@ -50,11 +58,16 @@ export function ReviewPanel({
   const [cleanupStatus, setCleanupStatus] = useState("");
   const [rootContinuationId, setRootContinuationId] = useState("");
   const [useElevated, setUseElevated] = useState(false);
+  const [scanProgress, setScanProgress] = useState<DeepScanProgress | null>(null);
   const scanInFlight = useRef(false);
+  const currentScanPathRef = useRef("");
+  const confirmationRef = useRef<HTMLElement | null>(null);
+  const finalPlanRef = useRef<HTMLDivElement | null>(null);
 
   const sortedNodes = useMemo(() => sortUsageNodes(nodes), [nodes]);
   const safeDumpNodes = useMemo(() => sortedNodes.filter(isSafeDumpCandidate).slice(0, 12), [sortedNodes]);
   const selectedNodes = useMemo(() => sortUsageNodes(Object.values(selected)), [selected]);
+  const allSafeDumpNodesSelected = safeDumpNodes.length > 0 && safeDumpNodes.every((node) => selected[node.id]);
   const selectedBytes = selectedNodes.reduce((total, node) => total + node.sizeBytes, 0);
   const riskCounts = useMemo(() => countRisks(selectedNodes), [selectedNodes]);
   const parentScanPath = parentPath(path);
@@ -73,9 +86,7 @@ export function ReviewPanel({
   );
 
   useEffect(() => {
-    if (initialNodes.length > 0) {
-      setNodes(initialNodes);
-    }
+    setNodes(initialNodes);
   }, [initialNodes]);
 
   useEffect(() => {
@@ -99,12 +110,47 @@ export function ReviewPanel({
     setManualPath(initialPath);
   }, [initialPath]);
 
+  useEffect(() => {
+    if (!confirmOpen) return;
+    window.requestAnimationFrame(() => {
+      confirmationRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [confirmOpen]);
+
+  useEffect(() => {
+    if (!preparedPlan) return;
+    window.requestAnimationFrame(() => {
+      finalPlanRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, [preparedPlan]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenDeepScanProgress((progress) => {
+      if (progress.path === currentScanPathRef.current) {
+        setScanProgress(progress);
+      }
+    })
+      .then((nextUnlisten) => {
+        unlisten = nextUnlisten;
+      })
+      .catch(() => {
+        // Event listening is only available inside the Tauri runtime.
+      });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
   async function scan(nextPath = path) {
     if (scanInFlight.current) return;
     scanInFlight.current = true;
-    setLoading(true);
+    currentScanPathRef.current = nextPath;
+    setScanProgress(initialDeepScanProgress(nextPath));
     setScanLoading(true);
     setMessage(`Scanning ${nextPath}...`);
+    setNodes([]);
     try {
       const result = await startDeepScan(nextPath);
       setPath(nextPath);
@@ -123,7 +169,6 @@ export function ReviewPanel({
     } finally {
       scanInFlight.current = false;
       setScanLoading(false);
-      setLoading(false);
     }
   }
 
@@ -196,6 +241,7 @@ export function ReviewPanel({
       setFinalConfirmation("");
       setSelected({});
       if (result.data.deletedBytes > 0) {
+        onCleanupRecovered?.(result.data.deletedBytes);
         await scan(rescanPath);
         onRescanPath?.(rescanPath);
       }
@@ -216,6 +262,7 @@ export function ReviewPanel({
       setMessage(formatCleanupOutcome(result.data));
       setRootContinuationId(result.data.rootContinuationId ?? "");
       if (result.data.deletedBytes > 0) {
+        onCleanupRecovered?.(result.data.deletedBytes);
         await scan(path);
         onRescanPath?.(path);
       }
@@ -232,12 +279,12 @@ export function ReviewPanel({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
           <div>
             <h2 className="text-sm font-semibold text-ink-strong">Clear</h2>
-            <div className="mt-1 max-w-3xl truncate font-mono text-xs text-ink-muted">{path}</div>
+            <PathText path={path} className="mt-1 max-w-3xl text-ink-muted" />
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
               className="inline-flex min-h-9 items-center gap-1 rounded-lg bg-white px-3 text-xs font-semibold text-blue-700 ring-1 ring-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={loading || !canScanParent}
+              disabled={loading || scanLoading || !canScanParent}
               onClick={() => void scan(parentScanPath)}
               title="Go up one level"
             >
@@ -252,21 +299,22 @@ export function ReviewPanel({
                     ? "bg-amber-100 text-amber-950 hover:bg-amber-200"
                     : "bg-slate-100 text-ink-body hover:bg-slate-200"
                 }`}
-                disabled={loading}
+                disabled={loading || scanLoading}
                 onClick={() => void scan(choice)}
               >
                 {shortPath(choice)}
               </button>
             ))}
-            <LoadingButton loading={loading} onClick={() => void scan()}>
+            <LoadingButton loading={scanLoading} disabled={loading} onClick={() => void scan()}>
               <RefreshCw size={16} />
               Scan
             </LoadingButton>
             {scanLoading && (
               <button
-                className="min-h-10 rounded-lg bg-white px-3 text-xs font-semibold text-blue-800 ring-1 ring-blue-200 hover:bg-blue-50"
+                className="inline-flex min-h-10 items-center gap-1 rounded-lg bg-white px-3 text-xs font-semibold text-blue-800 ring-1 ring-blue-200 hover:bg-blue-50"
                 onClick={() => void cancelScan()}
               >
+                <CircleStop size={14} />
                 Cancel
               </button>
             )}
@@ -288,7 +336,7 @@ export function ReviewPanel({
             onChange={(event) => setManualPath(event.target.value)}
             placeholder="/path/to/scan"
           />
-          <LoadingButton loading={loading} disabled={!normalizeManualPath(manualPath)} type="submit">
+          <LoadingButton loading={scanLoading} disabled={loading || !normalizeManualPath(manualPath)} type="submit">
             <RefreshCw size={16} />
             Scan Path
           </LoadingButton>
@@ -305,8 +353,15 @@ export function ReviewPanel({
                 selected={Boolean(selected[node.id])}
                 onSelect={() => toggle(node)}
                 onDrill={() => void scan(node.path)}
+                onUnmountAndReveal={
+                  onUnmountAndRevealPath
+                    ? (elevated = false) => onUnmountAndRevealPath(node.path, elevated)
+                    : undefined
+                }
                 allowProjectRootCleanup={allowProjectRootCleanup}
+                appStoreMode={appStoreMode}
                 disabled={loading}
+                scanDisabled={loading || scanLoading}
               />
             ))
           )}
@@ -327,34 +382,42 @@ export function ReviewPanel({
                 setSelected((current) => {
                   const next = { ...current };
                   for (const node of safeDumpNodes) {
-                    next[node.id] = node;
+                    if (allSafeDumpNodesSelected) {
+                      delete next[node.id];
+                    } else {
+                      next[node.id] = node;
+                    }
                   }
                   return next;
                 });
               }}
             >
-              Select all
+              {allSafeDumpNodesSelected ? "Unselect all" : "Select all"}
             </button>
           </div>
           <div className="mt-3 grid gap-2">
             {safeDumpNodes.map((node) => (
               <div key={node.id} className="flex items-center justify-between gap-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm">
                 <div className="min-w-0">
-                  <div className="truncate font-mono text-xs font-semibold text-ink-strong">{node.path}</div>
+                  <PathText path={node.path} className="font-semibold text-ink-strong" />
                   <div className="mt-1 text-xs text-emerald-800">{categoryLabel(node.category)}</div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <span className="font-semibold text-ink-strong">{formatBytes(node.sizeBytes)}</span>
                   <button
-                    className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={loading || Boolean(selected[node.id])}
+                    className={`rounded-lg bg-white px-2 py-1 text-xs font-semibold ring-1 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 ${
+                      selected[node.id]
+                        ? "text-ink-body ring-slate-200"
+                        : "text-emerald-800 ring-emerald-200"
+                    }`}
+                    disabled={loading}
                     onClick={() => toggle(node)}
                   >
-                    {selected[node.id] ? "Selected" : "Select"}
+                    {selected[node.id] ? "Unselect" : "Select"}
                   </button>
                   <button
                     className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-slate-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={loading}
+                    disabled={loading || scanLoading}
                     onClick={() => void scan(node.path)}
                   >
                     Drill
@@ -412,12 +475,12 @@ export function ReviewPanel({
           <div className="mt-4 grid gap-2">
             {selectedNodes.map((node) => (
               <div key={node.path} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
-                <span className="truncate font-mono text-xs text-ink-strong">{node.path}</span>
+                <PathText path={node.path} className="flex-1 text-ink-strong" />
                 <div className="flex shrink-0 items-center gap-2">
                   <span className="font-semibold">{formatBytes(node.sizeBytes)}</span>
                   <button
                     className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-slate-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={loading}
+                    disabled={loading || scanLoading}
                     onClick={() => void scan(node.path)}
                   >
                     Drill
@@ -438,11 +501,25 @@ export function ReviewPanel({
         {message && (
           <div className="mt-4 rounded-lg bg-slate-50 p-3 text-sm text-ink-body">
             {scanLoading && (
-              <div className="mb-2 h-2 overflow-hidden rounded-full bg-slate-200">
-                <div className="indeterminate-progress h-full rounded-full bg-blue-700" />
+              <div className="mb-2 flex items-center gap-3">
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
+                  <div className="h-full rounded-full bg-blue-700 transition-[width] duration-500" style={{ width: `${scanProgress?.percent ?? 0}%` }} />
+                </div>
+                <div className="w-10 text-right text-xs font-semibold text-blue-800 tabular-nums">{scanProgress?.percent ?? 0}%</div>
               </div>
             )}
             {message}
+            {scanLoading && scanProgress && (
+              <div className="mt-1 text-xs text-ink-muted">
+                {scanProgress.totalItems > 0
+                  ? t("scanStatus.progressItems", {
+                      processed: scanProgress.processedItems,
+                      total: scanProgress.totalItems,
+                    })
+                  : t("scanStatus.preparingScan")}
+                {scanProgress.currentPath ? ` · ${t("scanStatus.currentPath", { path: scanProgress.currentPath })}` : ""}
+              </div>
+            )}
             {rootContinuationId && !appStoreMode && (
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
@@ -460,7 +537,7 @@ export function ReviewPanel({
       </section>
 
       {confirmOpen && (
-        <section className="rounded-lg border border-amber-200 bg-amber-50 p-4 shadow-material">
+        <section ref={confirmationRef} className="rounded-lg border border-amber-200 bg-amber-50 p-4 shadow-material">
           <div className="grid gap-4 md:grid-cols-[1fr_320px]">
             <div>
               <div className="flex items-center gap-2 text-sm font-semibold text-amber-950">
@@ -486,7 +563,7 @@ export function ReviewPanel({
               )}
 
               {preparedPlan && (
-                <div className="mt-4 rounded-lg bg-white p-3 text-sm text-ink-body">
+                <div ref={finalPlanRef} className="mt-4 rounded-lg bg-white p-3 text-sm text-ink-body">
                   <div className="font-semibold text-ink-strong">Final Plan</div>
                   <div className="mt-1">
                     {preparedPlan.items.length} eligible item(s), {formatBytes(preparedPlan.estimatedRecoverableBytes)}
@@ -524,7 +601,7 @@ export function ReviewPanel({
                       {adminSessionUnlocked ? "Use Admin Mode for this cleanup" : "Request administrator privileges"}
                       <span className="font-normal text-ink-muted">
                         {adminSessionUnlocked
-                          ? "(CleanerX will prefer admin cleanup; macOS may still re-prompt later)"
+                          ? "(cleenosx will prefer admin cleanup; macOS may still re-prompt later)"
                           : "(macOS will ask for your password)"}
                       </span>
                     </label>
@@ -570,24 +647,33 @@ function ClearRow({
   selected,
   onSelect,
   onDrill,
+  onUnmountAndReveal,
   allowProjectRootCleanup,
+  appStoreMode,
   disabled,
+  scanDisabled,
 }: {
   node: UsageNode;
   selected: boolean;
   onSelect: () => void;
   onDrill: () => void;
+  onUnmountAndReveal?: (elevated?: boolean) => void;
   allowProjectRootCleanup: boolean;
+  appStoreMode: boolean;
   disabled: boolean;
+  scanDisabled: boolean;
 }) {
   const selectable =
     node.risk !== "readOnlySystem" &&
     (node.risk !== "dangerous" || (allowProjectRootCleanup && isProjectPath(node.path))) &&
     !isAssetsV2Area(node.path) &&
     !isBroadTarget(node.path);
+  const showUnmountReveal = !appStoreMode && node.risk === "readOnlySystem" && onUnmountAndReveal;
+  const KindIcon = node.kind === "file" ? File : FolderOpen;
+  const kindLabel = node.kind === "file" ? "File" : "Directory";
 
   return (
-    <div className="grid min-h-16 grid-cols-[36px_1fr_132px_124px_96px] items-center gap-3 px-4 py-3 text-sm">
+    <div className="grid min-h-16 grid-cols-[36px_1fr_132px_124px_240px] items-center gap-3 px-4 py-3 text-sm">
       <input
         type="checkbox"
         className="h-4 w-4"
@@ -599,27 +685,53 @@ function ClearRow({
       <div className="flex min-w-0 items-center gap-2">
         <button
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={disabled}
+          disabled={scanDisabled}
           onClick={onDrill}
-          title="Drill down"
+          title={node.kind === "file" ? "Scan file" : "Drill down"}
         >
-          <FolderOpen size={16} />
+          <KindIcon size={16} />
         </button>
         <div className="min-w-0">
-          <div className="truncate font-mono text-xs text-ink-strong">{node.path}</div>
-          <div className="mt-1 text-xs text-ink-muted">{categoryLabel(node.category)}</div>
+          <PathText path={node.path} className="text-ink-strong" />
+          <div className="mt-1 text-xs text-ink-muted">
+            {kindLabel} · {categoryLabel(node.category)}
+          </div>
         </div>
       </div>
       <div className="text-right font-semibold text-ink-strong">{formatBytes(node.sizeBytes)}</div>
       <RiskChip risk={node.risk} />
-      <button
-        className="inline-flex items-center justify-end gap-1 text-xs font-semibold text-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
-        disabled={disabled}
-        onClick={onDrill}
-      >
-        Open
-        <ChevronRight size={14} />
-      </button>
+      <div className="flex justify-end gap-2">
+        {showUnmountReveal && (
+          <button
+            className="inline-flex min-h-8 items-center gap-1 rounded-lg bg-amber-100 px-2.5 text-xs font-semibold text-amber-950 hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={disabled}
+            onClick={() => onUnmountAndReveal(false)}
+            title="Unmount this read-only mount and scan the revealed folder"
+          >
+            <Unplug size={13} />
+            Unmount
+          </button>
+        )}
+        {showUnmountReveal && (
+          <button
+            className="inline-flex min-h-8 items-center gap-1 rounded-lg bg-slate-900 px-2.5 text-xs font-semibold text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={disabled}
+            onClick={() => onUnmountAndReveal(true)}
+            title="Unmount with administrator permission and scan the revealed folder"
+          >
+            <ShieldCheck size={13} />
+            Admin
+          </button>
+        )}
+        <button
+          className="inline-flex min-h-8 items-center justify-end gap-1 rounded-lg bg-white px-2.5 text-xs font-semibold text-blue-700 ring-1 ring-slate-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={scanDisabled}
+          onClick={onDrill}
+        >
+          Open
+          <ChevronRight size={14} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -763,26 +875,38 @@ function shortPath(path: string) {
 
 function PreparedPlanRow({ item }: { item: PreparedCleanupItem }) {
   const actionProfile = item.actionProfile;
+  const KindIcon = item.kind === "file" ? File : FolderOpen;
+  const kindLabel = item.kind === "file" ? "File" : "Directory";
 
   return (
     <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate font-mono text-xs font-semibold text-ink-strong">{item.path}</div>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
-            <span>{categoryLabel(item.category)}</span>
-            <span>{formatBytes(item.estimatedBytes)}</span>
-            {actionProfile && <span>{actionProfile.deleteCapability.userFacingLevel}</span>}
+        <div className="flex min-w-0 items-start gap-2">
+          <div
+            className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ring-1 ${
+              item.kind === "file"
+                ? "bg-white text-ink-muted ring-slate-200"
+                : "bg-blue-50 text-blue-700 ring-blue-200"
+            }`}
+            title={kindLabel}
+          >
+            <KindIcon size={14} />
+          </div>
+          <div className="min-w-0">
+            <PathText path={item.path} className="font-semibold text-ink-strong" />
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+              <span>{kindLabel}</span>
+              <span>{categoryLabel(item.category)}</span>
+              <span>{formatBytes(item.estimatedBytes)}</span>
+              {actionProfile && <span>{actionProfile.deleteCapability.userFacingLevel}</span>}
+            </div>
           </div>
         </div>
         <RiskChip risk={item.risk} />
       </div>
       <div className="mt-2 text-xs text-ink-body">{actionProfile?.deleteCapability.userFacingSummary ?? item.reason}</div>
       {actionProfile && (
-        <div className="mt-1 text-xs text-ink-muted">
-          {formatActionScores(actionProfile)}
-          {actionProfile.recommendation.nextAction ? ` · ${actionProfile.recommendation.nextAction}` : ""}
-        </div>
+        <ActionScoreSummary actionProfile={actionProfile} includeNextAction compact className="mt-2" />
       )}
     </div>
   );
@@ -791,14 +915,11 @@ function PreparedPlanRow({ item }: { item: PreparedCleanupItem }) {
 function sortUsageNodes(nodes: UsageNode[]) {
   return [...nodes].sort(
     (left, right) =>
+      riskSortRank(left.risk) - riskSortRank(right.risk) ||
       Number(TEST_DELETE_PATHS.has(right.path)) - Number(TEST_DELETE_PATHS.has(left.path)) ||
       right.sizeBytes - left.sizeBytes ||
       left.path.localeCompare(right.path),
   );
-}
-
-function formatActionScores(actionProfile: ActionProfile) {
-  return `Safety ${actionProfile.scores.safetyPercent}% · Reclaim ${actionProfile.scores.reclaimValuePercent}% · Automation ${actionProfile.scores.automationPercent}% · Confidence ${actionProfile.scores.confidencePercent}%`;
 }
 
 function formatCleanupOutcome(outcome: CleanupOutcome) {
@@ -812,4 +933,16 @@ function formatCleanupOutcome(outcome: CleanupOutcome) {
     return outcome.message;
   }
   return `${outcome.message} First failure: ${firstFailure.path}: ${firstFailure.message}`;
+}
+
+function initialDeepScanProgress(path: string): DeepScanProgress {
+  return {
+    path,
+    currentPath: null,
+    processedItems: 0,
+    totalItems: 0,
+    percent: 0,
+    canceled: false,
+    finished: false,
+  };
 }

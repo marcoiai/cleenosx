@@ -128,6 +128,13 @@ pub struct VolumeInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VolumeOperationResult {
+    pub volumes: Vec<VolumeInfo>,
+    pub mount_point: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageNode {
     pub id: String,
     pub path: String,
@@ -148,6 +155,18 @@ pub struct DeepScanResult {
     pub canceled: bool,
     pub warnings_summary: DeepScanWarningsSummary,
     pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeepScanProgress {
+    pub path: String,
+    pub current_path: Option<String>,
+    pub processed_items: usize,
+    pub total_items: usize,
+    pub percent: u8,
+    pub canceled: bool,
+    pub finished: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

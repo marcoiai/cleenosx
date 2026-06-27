@@ -27,6 +27,18 @@ export function riskMeta(risk: RiskLevel) {
   }
 }
 
+const riskSortOrder: Record<RiskLevel, number> = {
+  safeToAnalyze: 0,
+  attention: 1,
+  reviewRequired: 2,
+  dangerous: 3,
+  readOnlySystem: 4,
+};
+
+export function riskSortRank(risk: RiskLevel) {
+  return riskSortOrder[risk];
+}
+
 export function categoryLabel(category: StorageCategory) {
   const labels: Record<StorageCategory, string> = {
     macOsApfs: "macOS/APFS",

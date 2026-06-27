@@ -62,7 +62,7 @@ fn print_help() {
 }
 
 fn title() {
-    println!("\n{BOLD}{BLUE}CleanerX CLI{RESET}");
+    println!("\n{BOLD}{BLUE}cleenosx CLI{RESET}");
     println!("{GRAY}Guided macOS storage investigation and explicit cleanup workflows.{RESET}");
     println!("{GRAY}--------------------------------------------------------{RESET}");
 }

@@ -1,8 +1,8 @@
-# CleanerX Context
+# cleenosx Context
 
 ## Product Intent
 
-CleanerX is macOS-only. It helps Mac users understand and recover SSD space without blindly deleting files. Clearing disk space on macOS can be hard to do alone because useful files, system-managed storage, caches, snapshots, app containers, and build artifacts are mixed together and often hidden behind vague labels like "System Data".
+cleenosx is a MealWare macOS app. It helps Mac users understand and recover SSD space without blindly deleting files. Clearing disk space on macOS can be hard to do alone because useful files, system-managed storage, caches, snapshots, app containers, and build artifacts are mixed together and often hidden behind vague labels like "System Data".
 
 The app focuses on storage that is hard to reason about from Finder or System Settings, especially APFS volumes, macOS "System Data", `AssetsV2`, simulator runtimes, local snapshots, developer caches, containers, and large user folders.
 
@@ -27,7 +27,7 @@ macOS storage accounting is opaque. A Mac may show large "System Data" usage eve
 - Files on `/System/Volumes/Data` that are not obvious from the Finder view.
 - Permission or SIP restrictions that make normal scans incomplete.
 
-CleanerX exists to make these causes explicit, rank the biggest blocks, and label them with conservative risk so the user can decide what is safe to remove.
+cleenosx exists to make these causes explicit, rank the biggest blocks, and label them with conservative risk so the user can decide what is safe to remove.
 
 ## Core User Jobs
 
@@ -73,12 +73,12 @@ Everything else is secondary until this loop works well.
 - No privileged helper or escalation flow.
 - No background daemon.
 - No signed/notarized distribution pipeline.
-- No Windows or Linux support. CleanerX should use macOS/APFS-specific behavior directly.
+- No Windows or Linux support. cleenosx should use macOS/APFS-specific behavior directly.
 - No persistent settings beyond placeholder UI.
 
 ## Safety Principles
 
-CleanerX should bias toward preserving data when uncertain.
+cleenosx should bias toward preserving data when uncertain.
 
 - Read-only scans can run without confirmation.
 - Unknown paths are inspect-first.
@@ -98,7 +98,7 @@ CleanerX should bias toward preserving data when uncertain.
 - **Bottleneck:** A file or directory that accounts for a large amount of disk usage and deserves user attention.
 - **Clear target:** A whole file or whole directory selected by the user for possible removal.
 - **Risk:** The safety label for investigation or cleanup decisions.
-- **Recovery helper:** A generated zsh script for guided inspection from macOS Recovery.
+- **Recovery helper:** A generated Bash script for guided inspection from macOS Recovery.
 
 ## Current Product State
 

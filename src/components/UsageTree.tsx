@@ -1,7 +1,8 @@
-import { CheckSquare, ChevronDown, ChevronRight, FolderOpen } from "lucide-react";
+import { CheckSquare, ChevronDown, ChevronRight, File, FolderOpen } from "lucide-react";
 import { useMemo, useState } from "react";
-import { categoryLabel, formatBytes } from "../format";
+import { categoryLabel, formatBytes, riskSortRank } from "../format";
 import type { UsageNode } from "../types";
+import { PathText } from "./PathText";
 import { RiskChip } from "./RiskChip";
 
 const TEST_DELETE_PATHS = new Set([
@@ -70,6 +71,8 @@ function UsageRow({
     (node.risk !== "dangerous" || (allowProjectRootCleanup && isProjectPath(node.path))) &&
     !isAssetsV2Area(node.path) &&
     !isBroadTarget(node.path);
+  const KindIcon = node.kind === "file" ? File : FolderOpen;
+  const kindLabel = node.kind === "file" ? "File" : "Directory";
 
   return (
     <div>
@@ -83,8 +86,18 @@ function UsageRow({
           >
             {hasChildren ? open ? <ChevronDown size={16} /> : <ChevronRight size={16} /> : <span className="h-4 w-4" />}
           </button>
+          <div
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ring-1 ${
+              node.kind === "file"
+                ? "bg-slate-50 text-ink-muted ring-slate-200"
+                : "bg-blue-50 text-blue-700 ring-blue-200"
+            }`}
+            title={kindLabel}
+          >
+            <KindIcon size={16} />
+          </div>
           <div className="min-w-0">
-            <div className="truncate font-mono text-xs text-ink-strong">{node.path}</div>
+            <PathText path={node.path} className="text-ink-strong" />
             {node.flags.length > 0 && <div className="mt-1 text-xs text-amber-700">flags: {node.flags.join(", ")}</div>}
           </div>
         </div>
@@ -107,7 +120,7 @@ function UsageRow({
             onClick={() => onScanPath?.(node.path)}
             title="Scan this path"
           >
-            <FolderOpen size={14} />
+            <KindIcon size={14} />
             Scan
           </button>
         </div>
@@ -161,6 +174,7 @@ function isAssetsV2Area(path: string) {
 function sortUsageNodes(nodes: UsageNode[]) {
   return [...nodes].sort(
     (left, right) =>
+      riskSortRank(left.risk) - riskSortRank(right.risk) ||
       Number(TEST_DELETE_PATHS.has(right.path)) - Number(TEST_DELETE_PATHS.has(left.path)) ||
       right.sizeBytes - left.sizeBytes ||
       left.path.localeCompare(right.path),

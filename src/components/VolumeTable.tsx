@@ -1,17 +1,32 @@
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, HardDrive, ShieldCheck, Unplug } from "lucide-react";
 import { useMemo } from "react";
 import { formatBytes } from "../format";
 import { useI18n } from "../i18n";
 import type { VolumeInfo } from "../types";
+import { PathText } from "./PathText";
 import { RiskChip } from "./RiskChip";
 
 interface VolumeTableProps {
   volumes: VolumeInfo[];
+  onMountAndScan?: (identifier: string) => void;
+  onMountAndScanElevated?: (identifier: string) => void;
   onScanPath?: (path: string) => void;
+  onUnmount?: (identifier: string) => void;
+  onUnmountElevated?: (identifier: string) => void;
   disabled?: boolean;
+  scanDisabled?: boolean;
 }
 
-export function VolumeTable({ volumes, onScanPath, disabled = false }: VolumeTableProps) {
+export function VolumeTable({
+  volumes,
+  onMountAndScan,
+  onMountAndScanElevated,
+  onScanPath,
+  onUnmount,
+  onUnmountElevated,
+  disabled = false,
+  scanDisabled = false,
+}: VolumeTableProps) {
   const { t } = useI18n();
   const sortedVolumes = useMemo(
     () =>
@@ -55,21 +70,66 @@ export function VolumeTable({ volumes, onScanPath, disabled = false }: VolumeTab
                 <td className="px-4 py-3 font-mono text-xs text-ink-body">{volume.identifier}</td>
                 <td className="px-4 py-3 text-ink-body">{volume.role ?? t("common.unknown")}</td>
                 <td className="max-w-72 px-4 py-3 font-mono text-xs text-ink-body">
-                  {volume.mountPoint ?? <span className="text-amber-700">{t("volumes.notMounted")}</span>}
+                  {volume.mountPoint ? <PathText path={volume.mountPoint} className="text-ink-body" /> : <span className="text-amber-700">{t("volumes.notMounted")}</span>}
                 </td>
                 <td className="px-4 py-3 text-ink-body">{formatBytes(volume.usedBytes)}</td>
                 <td className="px-4 py-3 text-ink-body">{formatBytes(volume.availableBytes)}</td>
                 <td className="px-4 py-3"><RiskChip risk={volume.risk} /></td>
-                <td className="px-4 py-3 text-right">
-                  <button
-                    className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg bg-slate-100 px-3 text-xs font-semibold text-ink-body hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
-                    disabled={!volume.mountPoint || !onScanPath || disabled}
-                    onClick={() => volume.mountPoint && onScanPath?.(volume.mountPoint)}
-                    title={volume.mountPoint ? t("volumes.scanMountPoint") : t("volumes.notMounted")}
-                  >
-                    <FolderOpen size={14} />
-                    {t("common.scan")}
-                  </button>
+                <td className="px-4 py-3">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {volume.mountPoint ? (
+                      <>
+                        <button
+                          className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg bg-slate-100 px-3 text-xs font-semibold text-ink-body hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                          disabled={!onScanPath || disabled || scanDisabled}
+                          onClick={() => volume.mountPoint && onScanPath?.(volume.mountPoint)}
+                          title={t("volumes.scanMountPoint")}
+                        >
+                          <FolderOpen size={14} />
+                          {t("common.scan")}
+                        </button>
+                        <button
+                          className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg bg-white px-3 text-xs font-semibold text-ink-body ring-1 ring-slate-200 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          disabled={!onUnmount || disabled || isProtectedLiveMount(volume)}
+                          onClick={() => onUnmount?.(volume.identifier)}
+                          title={isProtectedLiveMount(volume) ? t("volumes.protectedLiveMount") : t("volumes.unmountVolume")}
+                        >
+                          <Unplug size={14} />
+                          {t("volumes.unmountVolume")}
+                        </button>
+                        <button
+                          className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+                          disabled={!onUnmountElevated || disabled || isProtectedLiveMount(volume)}
+                          onClick={() => onUnmountElevated?.(volume.identifier)}
+                          title={isProtectedLiveMount(volume) ? t("volumes.protectedLiveMount") : t("volumes.unmountAsAdminTitle")}
+                        >
+                          <ShieldCheck size={14} />
+                          {t("volumes.unmountAsAdmin")}
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg bg-blue-700 px-3 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-400"
+                          disabled={!onMountAndScan || disabled || scanDisabled || Boolean(volume.locked) || isProtectedSupportVolume(volume)}
+                          onClick={() => onMountAndScan?.(volume.identifier)}
+                          title={volume.locked ? t("volumes.volumeLocked") : t("volumes.mountAndScanTitle")}
+                        >
+                          <HardDrive size={14} />
+                          {t("volumes.mountAndScan")}
+                        </button>
+                        <button
+                          className="inline-flex min-h-9 items-center justify-center gap-1 rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white hover:bg-black disabled:cursor-not-allowed disabled:opacity-40"
+                          disabled={!onMountAndScanElevated || disabled || scanDisabled || Boolean(volume.locked) || isProtectedSupportVolume(volume)}
+                          onClick={() => onMountAndScanElevated?.(volume.identifier)}
+                          title={volume.locked ? t("volumes.volumeLocked") : t("volumes.mountAsAdminTitle")}
+                        >
+                          <ShieldCheck size={14} />
+                          {t("volumes.mountAsAdmin")}
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -87,4 +147,18 @@ export function VolumeTable({ volumes, onScanPath, disabled = false }: VolumeTab
 
 function volumeSortBytes(volume: VolumeInfo) {
   return volume.usedBytes ?? volume.capacityBytes ?? 0;
+}
+
+function isProtectedSupportVolume(volume: VolumeInfo) {
+  return ["System", "Preboot", "VM", "Update", "Recovery", "xART", "Hardware", "Baseband"].includes(
+    volume.role ?? "",
+  );
+}
+
+function isProtectedLiveMount(volume: VolumeInfo) {
+  return (
+    ["/", "/System/Volumes/Data", "/System/Volumes/Preboot", "/System/Volumes/VM", "/System/Volumes/Update"].includes(
+      volume.mountPoint ?? "",
+    ) || isProtectedSupportVolume(volume)
+  );
 }

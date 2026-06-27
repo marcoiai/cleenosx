@@ -8,7 +8,7 @@
       "minimumSystemVersion": "12.0",
       "entitlements": "./Entitlements.appstore.plist",
       "files": {
-        "embedded.provisionprofile": "./profiles/CleanerX_Mac_App_Store.provisionprofile"
+        "embedded.provisionprofile": "./profiles/cleenosx_Mac_App_Store.provisionprofile"
       }
     }
   }

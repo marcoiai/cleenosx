@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
   AdminSessionStatus,
   CleanupOutcome,
@@ -6,13 +7,17 @@ import type {
   CleanupSelection,
   CleanupSettings,
   DeepScanResult,
+  DeepScanProgress,
   Finding,
   Overview,
   PreparedCleanupPlan,
   ScanResult,
   UsageNode,
   VolumeInfo,
+  VolumeOperationResult,
 } from "./types";
+
+export const DEEP_SCAN_PROGRESS_EVENT = "deep-scan-progress";
 
 export async function scanOverview() {
   return invoke<ScanResult<Overview>>("scan_overview");
@@ -46,16 +51,28 @@ export async function scanVolumes() {
   return invoke<ScanResult<VolumeInfo[]>>("scan_volumes");
 }
 
+export async function mountVolume(identifier: string, elevated = false) {
+  return invoke<ScanResult<VolumeOperationResult>>("mount_volume", { identifier, elevated });
+}
+
+export async function unmountVolume(identifier: string, elevated = false) {
+  return invoke<ScanResult<VolumeOperationResult>>("unmount_volume", { identifier, elevated });
+}
+
 export async function scanDataUsage() {
   return invoke<ScanResult<UsageNode[]>>("scan_data_usage");
 }
 
-export async function startDeepScan(path: string) {
-  return invoke<ScanResult<DeepScanResult>>("start_deep_scan", { path });
+export async function startDeepScan(path: string, elevated = false) {
+  return invoke<ScanResult<DeepScanResult>>("start_deep_scan", { path, elevated });
 }
 
 export async function cancelDeepScan() {
   return invoke<ScanResult<boolean>>("cancel_deep_scan");
+}
+
+export async function listenDeepScanProgress(handler: (progress: DeepScanProgress) => void) {
+  return listen<DeepScanProgress>(DEEP_SCAN_PROGRESS_EVENT, (event) => handler(event.payload));
 }
 
 export async function scanPathUsage(path: string) {

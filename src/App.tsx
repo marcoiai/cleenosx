@@ -1,5 +1,6 @@
 import {
   Activity,
+  CircleStop,
   Database,
   FolderTree,
   HardDrive,
@@ -19,7 +20,7 @@ import { ReviewPanel } from "./components/ReviewPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { StatPanel } from "./components/StatPanel";
 import { VolumeTable } from "./components/VolumeTable";
-import { categoryLabel, formatBytes } from "./format";
+import { categoryLabel, formatBytes, riskSortRank } from "./format";
 import { useI18n } from "./i18n";
 import { formatScanWarningSummary, hasScanWarnings, shouldOfferFullDiskAccess } from "./scanWarnings";
 import {
@@ -28,8 +29,10 @@ import {
   getCleanupSettings,
   getDefaultScanPath,
   getStorageOverview,
+  listenDeepScanProgress,
   lockAdminSession,
   listSnapshots,
+  mountVolume,
   scanAssetsV2,
   scanContainers,
   scanDeveloperTools,
@@ -37,15 +40,17 @@ import {
   scanVolumes,
   openFullDiskAccessSettings,
   startDeepScan,
+  unmountVolume,
   unlockAdminSession,
   updateCleanupSettings,
 } from "./tauri";
-import type { AdminSessionStatus, CleanupSettings, DeepScanWarningsSummary, Finding, Overview, ScanLog, UsageNode, VolumeInfo } from "./types";
+import type { AdminSessionStatus, CleanupSettings, DeepScanProgress, DeepScanWarningsSummary, Finding, Overview, ScanLog, UsageNode, VolumeInfo } from "./types";
 
 type View = "dashboard" | "volumes" | "scanner" | "findings" | "recovery" | "settings";
 type ScanState = "idle" | "loadingOverview" | "ready" | "deepScanRunning" | "deepScanPartial" | "deepScanCanceled" | "deepScanFailed";
 type ThemeMode = "light" | "black";
 const THEME_STORAGE_KEY = "cleanerx.themeMode.v2";
+const TOTAL_RECOVERED_STORAGE_KEY = "cleenosx.totalRecoveredBytes.v1";
 const IS_APP_STORE_BUILD = import.meta.env.VITE_CLEANERX_DISTRIBUTION === "app-store";
 
 const emptyOverview: Overview = {
@@ -93,12 +98,15 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [scanState, setScanState] = useState<ScanState>("idle");
+  const [deepScanProgress, setDeepScanProgress] = useState<DeepScanProgress | null>(null);
   const [deepScanWarnings, setDeepScanWarnings] = useState<DeepScanWarningsSummary | null>(null);
   const [defaultScanPath, setDefaultScanPath] = useState("/Users");
   const [deepScanPath, setDeepScanPath] = useState("/Users");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode());
+  const [totalRecoveredBytes, setTotalRecoveredBytes] = useState(() => readStoredBytes(TOTAL_RECOVERED_STORAGE_KEY));
   const scanInFlight = useRef(false);
   const overviewInFlight = useRef(false);
+  const scanButtonLoading = loading || scanState === "loadingOverview" || scanState === "deepScanRunning";
 
   const allFindings = useMemo(() => {
     const byKey = new Map<string, Finding>();
@@ -107,6 +115,7 @@ function App() {
     });
     return Array.from(byKey.values()).sort(
       (left, right) =>
+        riskSortRank(left.risk) - riskSortRank(right.risk) ||
         (right.sizeBytes ?? -1) - (left.sizeBytes ?? -1) ||
         left.title.localeCompare(right.title),
     );
@@ -116,6 +125,7 @@ function App() {
     const source = usage.length ? usage : overview.usageRoots;
     return [...source].sort(
       (left, right) =>
+        riskSortRank(left.risk) - riskSortRank(right.risk) ||
         Number(TEST_DELETE_PATHS.has(right.path)) - Number(TEST_DELETE_PATHS.has(left.path)) ||
         right.sizeBytes - left.sizeBytes ||
         left.path.localeCompare(right.path),
@@ -138,10 +148,31 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenDeepScanProgress((progress) => {
+      setDeepScanProgress(progress);
+    })
+      .then((nextUnlisten) => {
+        unlisten = nextUnlisten;
+      })
+      .catch(() => {
+        // Event listening is only available inside the Tauri runtime.
+      });
+
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     document.documentElement.classList.toggle("black", themeMode === "black");
     document.documentElement.style.colorScheme = themeMode === "black" ? "dark" : "light";
     writeThemeMode(themeMode);
   }, [themeMode]);
+
+  useEffect(() => {
+    writeStoredBytes(TOTAL_RECOVERED_STORAGE_KEY, totalRecoveredBytes);
+  }, [totalRecoveredBytes]);
 
   async function runOverview(options: { background?: boolean } = {}) {
     if (overviewInFlight.current) return;
@@ -195,13 +226,16 @@ function App() {
     await runDeepScan(deepScanPath);
   }
 
-  async function runDeepScan(path: string) {
-    if (scanState === "deepScanRunning") return;
+  async function runDeepScan(path: string, elevated = false) {
+    if (scanInFlight.current || scanState === "deepScanRunning") return;
+    scanInFlight.current = true;
     setDeepScanPath(path);
     setScanState("deepScanRunning");
+    setDeepScanProgress(initialDeepScanProgress(path));
     setDeepScanWarnings(null);
-    await withLoading(async () => {
-      const result = await startDeepScan(path);
+    setError("");
+    try {
+      const result = await startDeepScan(path, elevated);
       setUsage(result.data.entries);
       setDeepScanWarnings(result.data.warningsSummary);
       pushLogs(result.logs);
@@ -212,7 +246,71 @@ function App() {
             ? "deepScanPartial"
             : "ready",
       );
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(message);
+      setScanState("deepScanFailed");
+      pushLogs([{ timestamp: Math.floor(Date.now() / 1000), level: "error", message }]);
+    } finally {
+      scanInFlight.current = false;
+    }
+  }
+
+  async function mountVolumeAndScan(identifier: string, elevated = false) {
+    let mountPoint = "";
+    await withLoading(async () => {
+      const result = await mountVolume(identifier, elevated);
+      setVolumes(result.data.volumes);
+      pushLogs(result.logs);
+
+      mountPoint = result.data.mountPoint ?? findVolumeByIdentifier(result.data.volumes, identifier)?.mountPoint ?? "";
+      if (!mountPoint) {
+        const message = `Mounted ${identifier}, but no mount point was reported. Rescan volumes and try again.`;
+        setError(message);
+        pushLogs([{ timestamp: Math.floor(Date.now() / 1000), level: "warning", message }]);
+      }
     });
+
+    if (mountPoint) {
+      setActiveView("scanner");
+      await runDeepScan(mountPoint, elevated);
+    }
+  }
+
+  async function unmountSelectedVolume(identifier: string, elevated = false) {
+    let revealPath = "";
+    await withLoading(async () => {
+      const result = await unmountVolume(identifier, elevated);
+      setVolumes(result.data.volumes);
+      pushLogs(result.logs);
+      revealPath = result.data.mountPoint ?? "";
+    });
+
+    if (revealPath) {
+      setActiveView("scanner");
+      await runDeepScan(revealPath, elevated);
+    }
+  }
+
+  async function unmountPathAndReveal(path: string, elevated = false) {
+    let revealPath = "";
+    await withLoading(async () => {
+      const result = await unmountVolume(path, elevated);
+      setVolumes(result.data.volumes);
+      pushLogs(result.logs);
+
+      revealPath = result.data.mountPoint ?? "";
+      if (!revealPath) {
+        const message = `Unmount did not reveal ${path}. The mount may still be active.`;
+        setError(message);
+        pushLogs([{ timestamp: Math.floor(Date.now() / 1000), level: "warning", message }]);
+      }
+    });
+
+    if (revealPath) {
+      setActiveView("scanner");
+      await runDeepScan(revealPath, elevated);
+    }
   }
 
   async function cancelRunningDeepScan() {
@@ -227,6 +325,11 @@ function App() {
     if (loading || scanInFlight.current) return;
     setActiveView("scanner");
     void runDeepScan(path);
+  }
+
+  function addRecoveredBytes(deletedBytes: number) {
+    if (!Number.isFinite(deletedBytes) || deletedBytes <= 0) return;
+    setTotalRecoveredBytes((current) => current + Math.floor(deletedBytes));
   }
 
   async function updateSettings(nextSettings: CleanupSettings) {
@@ -307,7 +410,7 @@ function App() {
 
   function openView(view: View) {
     setActiveView(view);
-    if (!loading && !scanInFlight.current && !hasDataForView(view)) {
+    if (!scanInFlight.current && !hasDataForView(view)) {
       void scanForView(view);
     }
   }
@@ -358,8 +461,8 @@ function App() {
       <div className="grid min-h-screen grid-cols-[248px_1fr]">
         <aside className="border-r border-slate-200 bg-white">
           <div className="border-b border-slate-200 px-5 py-5">
-            <div className="text-xl font-semibold text-ink-strong">CleanerX</div>
-            <div className="mt-1 text-xs font-medium uppercase tracking-wide text-red-700">{t("app.tagline")}</div>
+            <div className="text-xl font-semibold text-ink-strong">cleenosx</div>
+            <div className="mt-1 text-xs font-medium text-red-700">{t("app.tagline")}</div>
           </div>
           <nav className="p-3">
             {navItems.map((item) => {
@@ -371,7 +474,6 @@ function App() {
                   className={`mb-1 flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-semibold transition ${
                     active ? "bg-blue-50 text-blue-800" : "text-ink-body hover:bg-slate-100"
                   } disabled:cursor-not-allowed disabled:opacity-50`}
-                  disabled={loading}
                   onClick={() => openView(item.id)}
                 >
                   <Icon size={18} />
@@ -397,17 +499,26 @@ function App() {
                       ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200 hover:bg-emerald-100"
                       : "bg-white text-amber-900 ring-1 ring-amber-200 hover:bg-amber-50"
                   } disabled:cursor-not-allowed disabled:opacity-60`}
-                  disabled={adminLoading || loading}
+                  disabled={adminLoading}
                   onClick={() => void toggleAdminSession()}
                 >
                   <ShieldCheck size={16} />
                   {adminLoading ? "Authorizing..." : adminSession.unlocked ? "Admin Ready" : "Unlock Admin"}
                 </button>
               )}
-              <LoadingButton loading={loading} onClick={scanActionForView(activeView)}>
+              <LoadingButton loading={scanButtonLoading} onClick={scanActionForView(activeView)}>
                 <RotateCw size={16} />
                 {t("common.scan")}
               </LoadingButton>
+              {scanState === "deepScanRunning" && (
+                <button
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-white px-4 text-sm font-semibold text-blue-800 shadow-sm ring-1 ring-blue-200 transition hover:bg-blue-50"
+                  onClick={() => void cancelRunningDeepScan()}
+                >
+                  <CircleStop size={16} />
+                  {t("scanStatus.cancelScan")}
+                </button>
+              )}
             </div>
           </header>
 
@@ -416,6 +527,7 @@ function App() {
             <ScanStatus
               state={scanState}
               warnings={deepScanWarnings}
+              progress={deepScanProgress}
               onCancel={cancelRunningDeepScan}
               onOpenPermissions={() => void openFullDiskAccessSettings()}
               appStoreMode={IS_APP_STORE_BUILD}
@@ -423,9 +535,9 @@ function App() {
 
             {activeView === "dashboard" && (
               <div className="grid gap-6">
-                <Dashboard overview={overview} />
-                <div className="grid grid-cols-[1.2fr_0.8fr] gap-6">
-                  <FindingsList findings={allFindings.slice(0, 5)} onScanPath={scanPath} disabled={loading} />
+                <Dashboard overview={overview} totalRecoveredBytes={totalRecoveredBytes} />
+                <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] gap-6">
+                  <FindingsList findings={allFindings.slice(0, 5)} onScanPath={scanPath} disabled={scanButtonLoading} />
                   <LogsPanel logs={logs} />
                 </div>
               </div>
@@ -433,7 +545,16 @@ function App() {
 
             {activeView === "volumes" && (
               <div className="grid gap-6">
-                <VolumeTable volumes={volumes} onScanPath={scanPath} disabled={loading} />
+                <VolumeTable
+                  volumes={volumes}
+                  onMountAndScan={(identifier) => void mountVolumeAndScan(identifier)}
+                  onMountAndScanElevated={(identifier) => void mountVolumeAndScan(identifier, true)}
+                  onScanPath={scanPath}
+                  onUnmount={(identifier) => void unmountSelectedVolume(identifier)}
+                  onUnmountElevated={(identifier) => void unmountSelectedVolume(identifier, true)}
+                  disabled={loading}
+                  scanDisabled={scanButtonLoading}
+                />
                 <LogsPanel logs={logs} />
               </div>
             )}
@@ -447,13 +568,15 @@ function App() {
                 appStoreMode={IS_APP_STORE_BUILD}
                 adminSessionUnlocked={adminSession.unlocked}
                 onLogs={pushLogs}
+                onCleanupRecovered={addRecoveredBytes}
                 onRescanPath={(path) => void runDeepScan(path)}
+                onUnmountAndRevealPath={(path, elevated) => void unmountPathAndReveal(path, elevated)}
               />
             )}
 
             {activeView === "findings" && (
               <div className="grid gap-6">
-                <FindingsList findings={allFindings} onScanPath={scanPath} disabled={loading} />
+                <FindingsList findings={allFindings} onScanPath={scanPath} disabled={scanButtonLoading} />
                 <LogsPanel logs={logs} />
               </div>
             )}
@@ -476,7 +599,7 @@ function App() {
   );
 }
 
-function Dashboard({ overview }: { overview: Overview }) {
+function Dashboard({ overview, totalRecoveredBytes }: { overview: Overview; totalRecoveredBytes: number }) {
   const { t } = useI18n();
   const freeBytes = overview.summary.availableBytes;
   const freeTone = freeBytes != null && freeBytes < 10 * 1024 ** 3 ? "bad" : freeBytes != null && freeBytes < 15 * 1024 ** 3 ? "warn" : "good";
@@ -489,10 +612,11 @@ function Dashboard({ overview }: { overview: Overview }) {
 
   return (
     <section className="grid gap-6">
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-4 xl:grid-cols-5">
         <StatPanel label={t("dashboard.total")} value={formatBytes(overview.summary.totalBytes)} />
         <StatPanel label={t("dashboard.used")} value={formatBytes(overview.summary.usedBytes)} />
         <StatPanel label={t("dashboard.free")} value={formatBytes(overview.summary.availableBytes)} tone={freeTone} />
+        <StatPanel label={t("dashboard.recovered")} value={formatBytes(totalRecoveredBytes)} tone={totalRecoveredBytes > 0 ? "good" : "neutral"} />
         <StatPanel label={t("dashboard.apfsVolumes")} value={String(overview.volumes.length)} />
       </div>
 
@@ -522,12 +646,14 @@ function Dashboard({ overview }: { overview: Overview }) {
 function ScanStatus({
   state,
   warnings,
+  progress,
   onCancel,
   onOpenPermissions,
   appStoreMode,
 }: {
   state: ScanState;
   warnings: DeepScanWarningsSummary | null;
+  progress: DeepScanProgress | null;
   onCancel: () => void;
   onOpenPermissions: () => void;
   appStoreMode: boolean;
@@ -539,48 +665,149 @@ function ScanStatus({
 
   const displayState = state === "ready" && warnings && hasScanWarnings(warnings) ? "deepScanPartial" : state;
 
-  const meta: Record<ScanState, { label: string; className: string }> = {
-    idle: { label: "", className: "" },
-    loadingOverview: { label: t("scanStatus.loadingOverview"), className: "border-blue-200 bg-blue-50 text-blue-800" },
-    ready: { label: t("scanStatus.ready"), className: "border-emerald-200 bg-emerald-50 text-emerald-800" },
-    deepScanRunning: { label: t("scanStatus.deepScanRunning"), className: "border-blue-200 bg-blue-50 text-blue-800" },
-    deepScanPartial: { label: t("scanStatus.deepScanPartial"), className: "border-amber-200 bg-amber-50 text-amber-900" },
-    deepScanCanceled: { label: t("scanStatus.deepScanCanceled"), className: "border-slate-200 bg-slate-50 text-ink-body" },
-    deepScanFailed: { label: t("scanStatus.deepScanFailed"), className: "border-red-200 bg-red-50 text-red-800" },
+  const meta: Record<
+    ScanState,
+    {
+      label: string;
+      emoji: string;
+      labelClassName: string;
+      iconClassName: string;
+      barClassName: string;
+      chipClassName: string;
+      detail?: string;
+    }
+  > = {
+    idle: {
+      label: "",
+      emoji: "",
+      labelClassName: "",
+      iconClassName: "",
+      barClassName: "",
+      chipClassName: "",
+    },
+    loadingOverview: {
+      label: t("scanStatus.loadingOverview"),
+      emoji: "🔎",
+      labelClassName: "text-blue-800",
+      iconClassName: "bg-white text-blue-800 ring-blue-200",
+      barClassName: "bg-blue-700",
+      chipClassName: "bg-white text-blue-800 ring-blue-200",
+      detail: t("scanStatus.loadingOverviewDetail"),
+    },
+    ready: {
+      label: t("scanStatus.ready"),
+      emoji: "✅",
+      labelClassName: "text-emerald-800",
+      iconClassName: "bg-white text-emerald-800 ring-emerald-200",
+      barClassName: "bg-emerald-700",
+      chipClassName: "bg-white text-emerald-800 ring-emerald-200",
+    },
+    deepScanRunning: {
+      label: t("scanStatus.deepScanRunning"),
+      emoji: "📊",
+      labelClassName: "text-blue-800",
+      iconClassName: "bg-white text-blue-800 ring-blue-200",
+      barClassName: "bg-blue-700",
+      chipClassName: "bg-white text-blue-800 ring-blue-200",
+      detail: t("scanStatus.deepScanDetail"),
+    },
+    deepScanPartial: {
+      label: t("scanStatus.deepScanPartial"),
+      emoji: "⚠️",
+      labelClassName: "text-amber-900",
+      iconClassName: "bg-white text-amber-900 ring-amber-200",
+      barClassName: "bg-amber-600",
+      chipClassName: "bg-white text-amber-900 ring-amber-200",
+    },
+    deepScanCanceled: {
+      label: t("scanStatus.deepScanCanceled"),
+      emoji: "⏹️",
+      labelClassName: "text-ink-body",
+      iconClassName: "bg-slate-100 text-slate-800 ring-slate-200",
+      barClassName: "bg-slate-500",
+      chipClassName: "bg-slate-100 text-slate-800 ring-slate-200",
+    },
+    deepScanFailed: {
+      label: t("scanStatus.deepScanFailed"),
+      emoji: "❌",
+      labelClassName: "text-red-800",
+      iconClassName: "bg-white text-red-800 ring-red-200",
+      barClassName: "bg-red-700",
+      chipClassName: "bg-white text-red-800 ring-red-200",
+    },
   };
   const current = meta[displayState];
+  const shownProgress = Math.min(100, Math.max(0, progress?.percent ?? 0));
+  const progressItems =
+    progress && progress.totalItems > 0
+      ? t("scanStatus.progressItems", {
+          processed: progress.processedItems,
+          total: progress.totalItems,
+        })
+      : t("scanStatus.preparingScan");
 
   return (
-    <div className={`mb-4 rounded-lg border px-3 py-2 text-sm ${current.className}`}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="font-semibold">{current.label}</div>
+    <div className="mb-4 overflow-hidden rounded-lg border border-slate-200 bg-white text-sm text-ink-body shadow-sm">
+      <div className={`h-1 ${current.barClassName}`} />
+      <div className="flex flex-wrap items-center gap-3 px-3 py-3">
+        <div
+          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-lg ring-1 ${
+            current.iconClassName
+          } ${displayState === "deepScanRunning" || displayState === "loadingOverview" ? "animate-pulse" : ""}`}
+        >
+          <span aria-hidden className="text-2xl leading-none">
+            {current.emoji}
+          </span>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className={`font-semibold ${current.labelClassName}`}>{current.label}</div>
+            {displayState === "deepScanRunning" && (
+              <span className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ring-1 ${current.chipClassName}`}>du</span>
+            )}
+            {displayState === "deepScanRunning" && (
+              <span className={`rounded-md px-2 py-0.5 text-[11px] font-semibold tabular-nums ring-1 ${current.chipClassName}`}>
+                {progressItems}
+              </span>
+            )}
+          </div>
+          {current.detail && <div className="mt-1 text-xs opacity-80">{current.detail}</div>}
+        </div>
+        {displayState === "deepScanRunning" && (
+          <div className="ml-auto text-right">
+            <div className="text-2xl font-bold leading-none tabular-nums">{shownProgress}%</div>
+            <div className="mt-1 text-[11px] font-semibold uppercase opacity-70">progress</div>
+          </div>
+        )}
         {displayState === "deepScanRunning" && (
           <button
-            className="min-h-8 rounded-lg bg-white px-3 text-xs font-semibold text-blue-800 ring-1 ring-blue-200 hover:bg-blue-100"
+            className="inline-flex min-h-9 items-center gap-1 rounded-lg bg-white px-3 text-xs font-semibold text-blue-800 ring-1 ring-blue-200 hover:bg-blue-100"
             onClick={onCancel}
           >
+            <CircleStop size={14} />
             {t("scanStatus.cancelScan")}
           </button>
         )}
       </div>
-      {(displayState === "loadingOverview" || displayState === "deepScanRunning") && (
-        <div className="mt-2">
-          <div className="h-2 overflow-hidden rounded-full bg-white/70">
-            <div className="indeterminate-progress h-full rounded-full bg-current opacity-70" />
+      {displayState === "deepScanRunning" && (
+        <div className="border-t border-current/10 px-3 py-3">
+          <div className="h-2.5 overflow-hidden rounded-full bg-white/80 ring-1 ring-current/10">
+            <div className={`h-full rounded-full transition-[width] duration-500 ${current.barClassName}`} style={{ width: `${shownProgress}%` }} />
           </div>
-          <div className="mt-1 text-xs">
-            {displayState === "loadingOverview"
-              ? t("scanStatus.loadingOverviewDetail")
-              : t("scanStatus.deepScanDetail")}
-          </div>
+          {progress?.currentPath && (
+            <div className="mt-2 flex min-w-0 items-center gap-2 rounded-lg bg-white/70 px-2 py-1.5 text-xs ring-1 ring-current/10">
+              <span aria-hidden>📍</span>
+              <span className="truncate font-mono">{t("scanStatus.currentPath", { path: progress.currentPath })}</span>
+            </div>
+          )}
         </div>
       )}
       {warnings && hasScanWarnings(warnings) && (
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-current/10 px-3 py-2 text-xs">
           <span>{formatScanWarningSummary(warnings)}</span>
           {!appStoreMode && shouldOfferFullDiskAccess(warnings) && (
             <button
-              className="min-h-8 rounded-lg bg-white px-3 font-semibold text-amber-900 ring-1 ring-amber-200 hover:bg-amber-100"
+              className="min-h-8 rounded-md bg-white px-3 font-semibold text-amber-900 ring-1 ring-amber-200 hover:bg-amber-50"
               onClick={onOpenPermissions}
             >
               {t("scanStatus.openFullDiskAccess")}
@@ -590,6 +817,18 @@ function ScanStatus({
       )}
     </div>
   );
+}
+
+function initialDeepScanProgress(path: string): DeepScanProgress {
+  return {
+    path,
+    currentPath: null,
+    processedItems: 0,
+    totalItems: 0,
+    percent: 0,
+    canceled: false,
+    finished: false,
+  };
 }
 
 function titleKeyForView(view: View) {
@@ -616,6 +855,14 @@ function subtitleKeyForView(view: View) {
   return subtitles[view];
 }
 
+function findVolumeByIdentifier(volumes: VolumeInfo[], identifier: string) {
+  const normalized = identifier.replace(/^\/dev\//, "");
+  return volumes.find((volume) => {
+    const volumeIdentifier = volume.identifier.replace(/^\/dev\//, "");
+    return volume.identifier === identifier || volumeIdentifier === normalized || volume.mountPoint === identifier;
+  });
+}
+
 export default App;
 
 function readThemeMode(): ThemeMode {
@@ -633,5 +880,24 @@ function writeThemeMode(themeMode: ThemeMode) {
     localStorage.setItem(THEME_STORAGE_KEY, themeMode);
   } catch {
     // Storage can be unavailable in some macOS WebView contexts; theme still works for the session.
+  }
+}
+
+function readStoredBytes(key: string) {
+  try {
+    const stored = localStorage.getItem(key);
+    if (!stored) return 0;
+    const value = Number(stored);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeStoredBytes(key: string, bytes: number) {
+  try {
+    localStorage.setItem(key, String(Math.max(0, Math.floor(bytes))));
+  } catch {
+    // Storage can be unavailable in some macOS WebView contexts; the in-memory total still updates.
   }
 }

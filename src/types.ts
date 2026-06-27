@@ -168,6 +168,11 @@ export interface VolumeInfo {
   notes: string[];
 }
 
+export interface VolumeOperationResult {
+  volumes: VolumeInfo[];
+  mountPoint?: string | null;
+}
+
 export interface UsageNode {
   id: string;
   path: string;
@@ -186,6 +191,16 @@ export interface DeepScanResult {
   canceled: boolean;
   warningsSummary: DeepScanWarningsSummary;
   durationMs: number;
+}
+
+export interface DeepScanProgress {
+  path: string;
+  currentPath?: string | null;
+  processedItems: number;
+  totalItems: number;
+  percent: number;
+  canceled: boolean;
+  finished: boolean;
 }
 
 export interface DeepScanWarningsSummary {
